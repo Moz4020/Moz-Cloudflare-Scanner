@@ -1,0 +1,72 @@
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test artifacts
+*.test
+*.out
+coverage.txt
+coverage.html
+coverage.*
+
+# Build output
+dist/
+build/
+bin/
+
+# Go workspace files
+go.work
+go.work.sum
+
+# Module cache leftovers
+vendor/
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Logs
+*.log
+logs/
+
+# Runtime state / output
+.senpaiscanner-state.json
+results/
+*.csv
+*.json
+!testdata/**/*.json
+
+# Environment / secrets
+.env
+.env.local
+.env.*
+!.env.example
+
+# goreleaser
+dist/
+.goreleaser.yml.bak
+
+# Temporary
+tmp/
+temp/
