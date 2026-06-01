@@ -14,7 +14,7 @@ const Art = `
  ╚════════════════════════════════════════╝`
 
 // Tagline is shown beneath the art.
-const Tagline = "  Cloudflare IP Scanner — tuned for restricted networks"
+const Tagline = "  simple Cloudflare endpoint toolkit"
 
 // rainbowPalette is a smooth warm→cool gradient used for color cycling.
 var rainbowPalette = []string{

@@ -17,6 +17,8 @@ func main() {
 		return
 	}
 
+	maximizeConsoleWindow()
+
 	model := ui.NewApp(version.Version)
 
 	p := tea.NewProgram(

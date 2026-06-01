@@ -20,7 +20,7 @@ Extract it, then run:
 
 ## Features
 
-- Scan Cloudflare IPs using a config-aware Phase 1 probe.
+- Scan Cloudflare IPs using a config aware Phase 1 probe.
 - Validate candidates through xray in Phase 2.
 - Copy working `IP:port` endpoints and save them to `ips.txt`.
 - Generate `configs.txt` for v2rayN from one working VLESS config plus `ips.txt`.

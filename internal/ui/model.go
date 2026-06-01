@@ -143,23 +143,24 @@ type quickPreset struct {
 }
 
 var quickCountPresets = []quickPreset{
-	{"5,000", "5000"},
-	{"20,000", "20000"},
-	{"100,000", "100000"},
+	{"Quick 5k", "5000"},
+	{"Balanced 20k", "20000"},
+	{"Deep 100k", "100000"},
 	{"Custom", ""},
 }
 
 var quickWorkersPresets = []quickPreset{
-	{"50  — default (restricted net)", "50"},
-	{"100 — balanced", "100"},
-	{"200 — fast (good connections)", "200"},
+	{"Safe 50", "50"},
+	{"Balanced 100", "100"},
+	{"Fast 200", "200"},
+	{"Max 300", "300"},
 	{"Custom", ""},
 }
 
 var quickTimeoutPresets = []quickPreset{
-	{"2s  — aggressive (fast net)", "2s"},
-	{"3s  — balanced", "3s"},
-	{"5s  — default (restricted net)", "5s"},
+	{"Fast 2s", "2s"},
+	{"Balanced 3s", "3s"},
+	{"Safe 5s", "5s"},
 	{"Custom", ""},
 }
 
@@ -307,8 +308,12 @@ func NewApp(version string) AppModel {
 		height:           40,
 		scanStarted:      time.Now(),
 		quickCustomInput: customInput,
-		configWorkersIdx: 0,
-		configTimeoutIdx: 2,
+		quickCountIdx:    1,
+		quickWorkersIdx:  1,
+		quickTimeoutIdx:  1,
+		configCountIdx:   2,
+		configWorkersIdx: 1,
+		configTimeoutIdx: 1,
 	}
 
 	// Config input for "Scan with Config"
@@ -571,10 +576,10 @@ func (m AppModel) selectMenuItem() (tea.Model, tea.Cmd) {
 		m.configDone = false
 		m.configSetupRow = 0
 		m.configOptionalRow = 0
-		m.configCountIdx = 1   // default: 5,000
+		m.configCountIdx = 2   // default: Balanced 20k
 		m.configTopNIdx = 2    // default: 50 for Phase 2
-		m.configWorkersIdx = 0 // default: 50 workers (restricted-net safe)
-		m.configTimeoutIdx = 2 // default: 5s
+		m.configWorkersIdx = 1 // default: Balanced 100
+		m.configTimeoutIdx = 1 // default: Balanced 3s
 		m.configIPMode = 0     // default: random Cloudflare IPs
 		m.configPortFocus = 0
 		m.configSelectedPorts = nil
@@ -1836,7 +1841,7 @@ func (m AppModel) viewAbout() string {
 	sb.WriteString(styleTitle.Render("  Moz Cloudflare Scanner\n"))
 	sb.WriteString(styleDim.Render(fmt.Sprintf("  version %s", m.version)))
 	sb.WriteString("\n\n")
-	sb.WriteString(styleNormal.Render("  A Cloudflare IP scanner built for high-latency, restricted networks."))
+	sb.WriteString(styleNormal.Render("  Simple Cloudflare endpoint toolkit for Windows."))
 	sb.WriteRune('\n')
 
 	sb.WriteString(styleNormal.Render("  Probes Cloudflare's edge nodes via TCP/TLS/HTTP, measures loss,"))
@@ -1845,7 +1850,7 @@ func (m AppModel) viewAbout() string {
 	sb.WriteString(styleNormal.Render("  jitter, and identifies the colo (PoP) behind each IP."))
 	sb.WriteString("\n\n")
 
-	sb.WriteString(styleDim.Render("  github.com/moz/moz-cloudflare-scanner"))
+	sb.WriteString(styleDim.Render("  github.com/Moz4020/Moz-Cloudflare-Scanner"))
 	sb.WriteString("\n\n")
 	sb.WriteString(styleHint.Render("  enter/q → back"))
 	return sb.String()
@@ -2888,10 +2893,10 @@ func runConfigScan(rawURL string) {
 // ---------------------------------------------------------------------------
 
 var configCountValues = []int{1000, 5000, 20000, 0} // 0 = custom
-var configCountLabels = []string{"1,000", "5,000", "20,000", "Custom"}
+var configCountLabels = []string{"Quick 1k", "Normal 5k", "Balanced 20k", "Custom"}
 var configTopNValues = []int{10, 25, 50, 100, 0} // 0 = all
 var configTopNLabels = []string{"10", "25", "50", "100", "All", "Custom"}
-var configIPModeLabels = []string{"Random", "From File"}
+var configIPModeLabels = []string{"Random IPs", "ips.txt"}
 var configPortChoices = []struct {
 	label string
 	port  int
@@ -3076,21 +3081,21 @@ func (m AppModel) viewConfigPhase1() string {
 	if m.configIPMode == 1 {
 		source = "ips.txt"
 	}
-	probe := "HTTP"
+	probe := "http"
 	if withConfig {
-		probe = "config-aware"
+		probe = "config aware"
 	}
 	rate := 0.0
 	if tested > 0 {
 		rate = float64(healthy) / float64(tested) * 100
 	}
-	sb.WriteString(fmt.Sprintf("  %s  source: %s  probe: %s  ports: %s\n",
+	sb.WriteString(fmt.Sprintf("  %s  source %s   probe %s   ports %s\n",
 		icon,
 		styleNormal.Render(source),
 		styleNormal.Render(probe),
 		styleDim.Render(formatPorts(m.resolveConfigPorts())),
 	))
-	sb.WriteString(fmt.Sprintf("     tested: %s  %s: %s  target: %s  hit-rate: %s\n",
+	sb.WriteString(fmt.Sprintf("     tested %s   %s %s   target %s   hit-rate %s\n",
 		styleAccent.Render(fmt.Sprintf("%d", tested)),
 		countLabel,
 		styleGood.Render(fmt.Sprintf("%d", healthy)),
@@ -3100,7 +3105,7 @@ func (m AppModel) viewConfigPhase1() string {
 	if tested > 0 {
 		elapsed := time.Since(m.scanStarted)
 		scanRate := float64(tested) / elapsed.Seconds()
-		sb.WriteString(styleDim.Render(fmt.Sprintf("     elapsed: %s  rate: %s  eta: %s\n",
+		sb.WriteString(styleDim.Render(fmt.Sprintf("     elapsed %s   rate %s   eta %s\n",
 			formatDurationShort(elapsed),
 			formatRate(scanRate),
 			formatETA(tested, m.configPhase1Total, scanRate, m.configPhase1Done),
@@ -3124,7 +3129,7 @@ func (m AppModel) viewConfigPhase1() string {
 				label = "all"
 			}
 			sb.WriteString(styleGood.Render(fmt.Sprintf("  Found %d candidates. Testing %s spread candidates with xray...\n", healthy, label)))
-			sb.WriteString(styleDim.Render("  Phase 1 is a reachability filter; Phase 2 samples latency bands and IP ranges.\n\n"))
+			sb.WriteString(styleDim.Render("  Phase 1 only finds candidates; Phase 2 confirms xray works.\n\n"))
 		}
 	} else if m.configIPMode == 1 {
 		sb.WriteString(styleNormal.Render("  Probing IPs from ips.txt on the selected ports...\n\n"))
@@ -3133,12 +3138,12 @@ func (m AppModel) viewConfigPhase1() string {
 		sb.WriteString(styleDim.Render("  healthy hits also explore nearby addresses in the same Cloudflare block\n\n"))
 	} else {
 		sb.WriteString(styleNormal.Render("  Scanning Cloudflare IPs using your config reachability probe...\n"))
-		sb.WriteString(styleDim.Render("  these are candidates, not confirmed working endpoints until xray validation\n\n"))
+		sb.WriteString(styleDim.Render("  Phase 1 only finds candidates; Phase 2 confirms xray works.\n\n"))
 	}
 
 	if m.liveResultPath != "" {
 		path := truncateMiddle(m.liveResultPath, minInt(maxInt(m.width-20, 30), 90))
-		sb.WriteString(styleDim.Render("  live results: "+path) + "\n\n")
+		sb.WriteString(styleDim.Render("  live file: "+path) + "\n\n")
 	}
 
 	if len(m.configPhase1Results) > 0 {
@@ -3146,7 +3151,6 @@ func (m AppModel) viewConfigPhase1() string {
 		if withConfig {
 			statusLabel = "PHASE 1"
 		}
-		sb.WriteString(styleDim.Render("  Best live candidates\n"))
 		sb.WriteString(fmt.Sprintf("%s\n%s\n",
 			styleHeader.Render(endpointHeader(statusLabel)),
 			styleSep.Render(tableSeparator(76)),
@@ -3414,32 +3418,19 @@ func phase2RangeKey(ip net.IP) string {
 	return fmt.Sprintf("%x:%x", ip16[0:2], ip16[2:4])
 }
 
-const (
-	phase2ValidationTimeout      = 7 * time.Second
-	phase2DeadRangeFailThreshold = 12
-)
-
-type phase2RangeProgress struct {
-	tested  int
-	failed  int
-	success int
-}
+const phase2ValidationTimeout = 7 * time.Second
 
 func phase2WorkerCount(total int) int {
 	switch {
 	case total <= 0:
 		return 0
 	case total >= 100:
-		return 16
+		return 32
 	case total >= 30:
-		return 12
+		return 16
 	default:
 		return minInt(8, total)
 	}
-}
-
-func phase2RangePruningEnabled(total int) bool {
-	return total >= 100
 }
 
 // ---------------------------------------------------------------------------
@@ -3479,42 +3470,6 @@ func runConfigPhase2(rawURL string, topIPs []*result.Result) {
 	jobs := make(chan *result.Result)
 	var done atomic.Int64
 	var wg sync.WaitGroup
-	var rangeMu sync.Mutex
-	rangeStats := make(map[string]phase2RangeProgress)
-
-	recordRangeResult := func(ip net.IP, success bool) {
-		if !phase2RangePruningEnabled(total) {
-			return
-		}
-		key := phase2RangeKey(ip)
-		if key == "" {
-			return
-		}
-		rangeMu.Lock()
-		st := rangeStats[key]
-		st.tested++
-		if success {
-			st.success++
-		} else {
-			st.failed++
-		}
-		rangeStats[key] = st
-		rangeMu.Unlock()
-	}
-
-	shouldSkipRange := func(ip net.IP) bool {
-		if !phase2RangePruningEnabled(total) {
-			return false
-		}
-		key := phase2RangeKey(ip)
-		if key == "" {
-			return false
-		}
-		rangeMu.Lock()
-		st := rangeStats[key]
-		rangeMu.Unlock()
-		return st.success == 0 && st.failed >= phase2DeadRangeFailThreshold
-	}
 
 	sendProgress := func(vr *xraytest.ValidationResult) {
 		current := int(done.Add(1))
@@ -3541,7 +3496,6 @@ func runConfigPhase2(rawURL string, topIPs []*result.Result) {
 				ip := r.IP.String()
 				swapped := cfg.WithEndpoint(ip, r.Port)
 				vr := xraytest.ValidateConfig(ctx, swapped, phase2ValidationTimeout)
-				recordRangeResult(r.IP, vr.Success)
 				sendProgress(vr)
 			}
 		}()
@@ -3551,15 +3505,6 @@ enqueue:
 	for _, r := range topIPs {
 		if ctx.Err() != nil {
 			break
-		}
-		if shouldSkipRange(r.IP) {
-			sendProgress(&xraytest.ValidationResult{
-				IP:        r.IP.String(),
-				Port:      r.Port,
-				Transport: cfg.Network,
-				Error:     "skipped: range failed repeatedly",
-			})
-			continue
 		}
 		select {
 		case <-ctx.Done():

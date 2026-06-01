@@ -38,17 +38,17 @@ func TestMenuOnlyShowsMainWorkflow(t *testing.T) {
 func TestResolvePhase1OptionsUsesRandomCloudflareDefaults(t *testing.T) {
 	m := NewApp("test")
 	m.configURL = "vless://12345678-1234-1234-1234-123456789abc@example.com:443?encryption=none&security=tls&type=ws&host=example.com&path=%2F#test"
-	m.configCountIdx = 1
+	m.configCountIdx = 2
 
 	opts := m.resolvePhase1Options()
-	if opts.count != 5000 {
-		t.Fatalf("count = %d, want 5000", opts.count)
+	if opts.count != 20000 {
+		t.Fatalf("count = %d, want 20000", opts.count)
 	}
-	if opts.concurrency != 50 {
-		t.Fatalf("concurrency = %d, want 50", opts.concurrency)
+	if opts.concurrency != 100 {
+		t.Fatalf("concurrency = %d, want 100", opts.concurrency)
 	}
-	if opts.timeout.String() != "5s" {
-		t.Fatalf("timeout = %s, want 5s", opts.timeout)
+	if opts.timeout.String() != "3s" {
+		t.Fatalf("timeout = %s, want 3s", opts.timeout)
 	}
 	if opts.rawURL != m.configURL {
 		t.Fatal("rawURL was not preserved")
@@ -408,8 +408,8 @@ func TestSelectPhase2CandidatesAllUsesSpreadOrder(t *testing.T) {
 }
 
 func TestPhase2WorkerCountScalesForLargeBatches(t *testing.T) {
-	if got := phase2WorkerCount(2000); got != 16 {
-		t.Fatalf("workers for large batch = %d, want 16", got)
+	if got := phase2WorkerCount(2000); got != 32 {
+		t.Fatalf("workers for large batch = %d, want 32", got)
 	}
 	if got := phase2WorkerCount(3); got != 3 {
 		t.Fatalf("workers for small batch = %d, want 3", got)
@@ -420,7 +420,7 @@ func TestValidationOutcomeCountsSeparatesSkipped(t *testing.T) {
 	success, failed, skipped := validationOutcomeCounts([]*xraytest.ValidationResult{
 		{Success: true},
 		{Success: false, Error: "tls handshake timeout"},
-		{Success: false, Error: "skipped: range failed repeatedly"},
+		{Success: false, Error: "skipped: canceled"},
 	})
 	if success != 1 || failed != 1 || skipped != 1 {
 		t.Fatalf("counts = success %d failed %d skipped %d, want 1/1/1", success, failed, skipped)
