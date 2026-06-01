@@ -164,6 +164,27 @@ var quickTimeoutPresets = []quickPreset{
 	{"Custom", ""},
 }
 
+var phase2WorkersPresets = []quickPreset{
+	{"Safe 20", "20"},
+	{"Balanced 50", "50"},
+	{"Fast 100", "100"},
+	{"Max 200", "200"},
+	{"Custom", ""},
+}
+
+func phase2WorkersLabels() []string {
+	labels := make([]string, len(phase2WorkersPresets))
+	for i, p := range phase2WorkersPresets {
+		labels[i] = p.label
+	}
+	return labels
+}
+
+func (m AppModel) isPhase2WorkersCustomSelected() bool {
+	return m.configPhase2WorkersIdx == len(phase2WorkersPresets)-1
+}
+
+
 // quickSetupRow identifies which row is focused on the Quick Scan setup page.
 type quickSetupRow int
 
@@ -244,11 +265,13 @@ type AppModel struct {
 	configCustomRow     int    // 1=count, 2=workers, 3=timeout, 5=topN custom
 	configCountCustom   string // value when Custom count is selected
 	configWorkersCustom string // value when Custom workers is selected
-	configTimeoutCustom string // value when Custom timeout is selected
-	configTopNCustom    string // value when Custom top N is selected
-	configOptionalRow   int    // 0=config URL, 1=validate top N, 2=start
-	configPortFocus     int
-	configSelectedPorts map[int]bool
+	configTimeoutCustom       string // value when Custom timeout is selected
+	configTopNCustom          string // value when Custom top N is selected
+	configPhase2WorkersIdx    int    // index into phase2WorkersPresets
+	configPhase2WorkersCustom string // value when Custom workers is selected for Phase 2
+	configOptionalRow         int    // 0=config URL, 1=validate top N, 2=workers, 3=start
+	configPortFocus           int
+	configSelectedPorts       map[int]bool
 	// phase 1 state
 	configPhase1Results []*result.Result
 	configPhase1Done    bool
@@ -308,12 +331,13 @@ func NewApp(version string) AppModel {
 		height:           40,
 		scanStarted:      time.Now(),
 		quickCustomInput: customInput,
-		quickCountIdx:    1,
-		quickWorkersIdx:  1,
-		quickTimeoutIdx:  1,
-		configCountIdx:   2,
-		configWorkersIdx: 1,
-		configTimeoutIdx: 1,
+		quickCountIdx:          1,
+		quickWorkersIdx:        1,
+		quickTimeoutIdx:        1,
+		configCountIdx:         2,
+		configWorkersIdx:       1,
+		configTimeoutIdx:       1,
+		configPhase2WorkersIdx: 1, // default: Balanced 50
 	}
 
 	// Config input for "Scan with Config"
@@ -580,6 +604,8 @@ func (m AppModel) selectMenuItem() (tea.Model, tea.Cmd) {
 		m.configTopNIdx = 2    // default: 50 for Phase 2
 		m.configWorkersIdx = 1 // default: Balanced 100
 		m.configTimeoutIdx = 1 // default: Balanced 3s
+		m.configPhase2WorkersIdx = 1 // default: Balanced 50
+		m.configPhase2WorkersCustom = ""
 		m.configIPMode = 0     // default: random Cloudflare IPs
 		m.configPortFocus = 0
 		m.configSelectedPorts = nil
@@ -2609,7 +2635,19 @@ func (m AppModel) viewConfigOptional() string {
 		sb.WriteString(styleDim.Render("            Phase 2 picks — used only when a config URL is entered") + "\n\n")
 	}
 
-	rowLabel(2, "  Start  ")
+	rowLabel(2, "  Workers")
+	sb.WriteString(" ")
+	renderPills(phase2WorkersLabels(), m.configPhase2WorkersIdx)
+	sb.WriteString("\n")
+	if m.configCustomMode && m.configCustomRow == 6 {
+		sb.WriteString(styleAccent.Render("            custom workers: ") + m.configCustomInput.View() + "\n\n")
+	} else if m.isPhase2WorkersCustomSelected() && m.configPhase2WorkersCustom != "" {
+		sb.WriteString(styleDim.Render(fmt.Sprintf("            Phase 2 xray workers  (custom: %s)", m.configPhase2WorkersCustom)) + "\n\n")
+	} else {
+		sb.WriteString(styleDim.Render("            Phase 2 xray validation workers") + "\n\n")
+	}
+
+	rowLabel(3, "  Start  ")
 	mode := "Phase 1 only"
 	if strings.TrimSpace(m.configInput.Value()) != "" {
 		mode = "Phase 1 + xray validation"
@@ -2647,6 +2685,8 @@ func (m AppModel) handleConfigOptionalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "enter":
 			if m.configCustomRow == 5 {
 				m.configTopNCustom = strings.TrimSpace(m.configCustomInput.Value())
+			} else if m.configCustomRow == 6 {
+				m.configPhase2WorkersCustom = strings.TrimSpace(m.configCustomInput.Value())
 			}
 			m.configCustomMode = false
 			m.configCustomInput.Blur()
@@ -2698,7 +2738,7 @@ func (m AppModel) handleConfigOptionalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "down", "j":
-		if m.configOptionalRow < 2 {
+		if m.configOptionalRow < 3 {
 			m.configOptionalRow++
 			m.configInput.Blur()
 			return m, nil
@@ -2710,6 +2750,11 @@ func (m AppModel) handleConfigOptionalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.configTopNIdx--
 			}
 			return m, nil
+		} else if m.configOptionalRow == 2 {
+			if m.configPhase2WorkersIdx > 0 {
+				m.configPhase2WorkersIdx--
+			}
+			return m, nil
 		}
 	case "right", "l":
 		if m.configOptionalRow == 1 {
@@ -2717,18 +2762,35 @@ func (m AppModel) handleConfigOptionalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.configTopNIdx++
 			}
 			return m, nil
+		} else if m.configOptionalRow == 2 {
+			if m.configPhase2WorkersIdx < len(phase2WorkersPresets)-1 {
+				m.configPhase2WorkersIdx++
+			}
+			return m, nil
 		}
 	case "enter":
-		if m.configOptionalRow == 1 && m.isTopNCustomSelected() {
-			m.configCustomMode = true
-			m.configCustomRow = 5
-			m.configCustomInput.SetValue(m.configTopNCustom)
-			m.configCustomInput.Placeholder = "e.g. 75"
-			m.configCustomInput.Focus()
-			return m, textinput.Blink
-		}
 		if m.configOptionalRow == 1 {
+			if m.isTopNCustomSelected() {
+				m.configCustomMode = true
+				m.configCustomRow = 5
+				m.configCustomInput.SetValue(m.configTopNCustom)
+				m.configCustomInput.Placeholder = "e.g. 75"
+				m.configCustomInput.Focus()
+				return m, textinput.Blink
+			}
 			m.configOptionalRow = 2
+			return m, nil
+		}
+		if m.configOptionalRow == 2 {
+			if m.isPhase2WorkersCustomSelected() {
+				m.configCustomMode = true
+				m.configCustomRow = 6
+				m.configCustomInput.SetValue(m.configPhase2WorkersCustom)
+				m.configCustomInput.Placeholder = "e.g. 80"
+				m.configCustomInput.Focus()
+				return m, textinput.Blink
+			}
+			m.configOptionalRow = 3
 			return m, nil
 		}
 		return m.launchPhase1FromOptional()
@@ -3433,19 +3495,39 @@ func phase2WorkerCount(total int) int {
 	}
 }
 
+func (m AppModel) resolvePhase2Workers() int {
+	if m.configPhase2WorkersIdx < 0 || m.configPhase2WorkersIdx >= len(phase2WorkersPresets) {
+		return 50 // default fallback
+	}
+	wp := phase2WorkersPresets[m.configPhase2WorkersIdx]
+	if wp.value == "" {
+		n, _ := strconv.Atoi(strings.TrimSpace(m.configPhase2WorkersCustom))
+		if n <= 0 {
+			return 50
+		}
+		return n
+	}
+	n, _ := strconv.Atoi(wp.value)
+	if n <= 0 {
+		return 50
+	}
+	return n
+}
+
 // ---------------------------------------------------------------------------
 // Config Phase 2 — xray validation of selected candidates
 // ---------------------------------------------------------------------------
 
 func (m AppModel) startConfigPhase2(topIPs []*result.Result) tea.Cmd {
 	url := m.configURL
+	workers := m.resolvePhase2Workers()
 	return func() tea.Msg {
-		go runConfigPhase2(url, topIPs)
+		go runConfigPhase2(url, topIPs, workers)
 		return nil
 	}
 }
 
-func runConfigPhase2(rawURL string, topIPs []*result.Result) {
+func runConfigPhase2(rawURL string, topIPs []*result.Result, workers int) {
 	cfg, err := xraytest.ParseProxyURL(rawURL)
 	if err != nil {
 		if prog != nil {
@@ -3459,7 +3541,9 @@ func runConfigPhase2(rawURL string, topIPs []*result.Result) {
 	defer cancel()
 
 	total := len(topIPs)
-	workers := phase2WorkerCount(total)
+	if workers <= 0 {
+		workers = phase2WorkerCount(total)
+	}
 	if workers <= 0 {
 		if prog != nil {
 			prog.Send(ConfigDoneMsg{})

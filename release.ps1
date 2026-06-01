@@ -2,9 +2,11 @@ $ErrorActionPreference = "Stop"
 
 & "$PSScriptRoot\build.ps1"
 
+$Version = "0.1.1 Beta"
+$VersionFileFriendly = $Version -replace " ", "-"
 $Dist = Join-Path $PSScriptRoot "dist"
 $PackageDir = Join-Path $Dist "release-package"
-$ZipPath = Join-Path $Dist "moz-cloudflare-scanner-windows-amd64.zip"
+$ZipPath = Join-Path $Dist "moz-cloudflare-scanner-windows-amd64-$VersionFileFriendly.zip"
 
 if (Test-Path $PackageDir) {
     Remove-Item -Recurse -Force $PackageDir
