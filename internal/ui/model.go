@@ -1411,7 +1411,7 @@ func (m AppModel) handleGenerateConfigsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 	switch msg.String() {
 	case "ctrl+c":
 		return m, tea.Quit
-	case "esc", "q":
+	case "esc":
 		m.page = PageHome
 		m.generatorInput.Blur()
 		m.generatorPrefixInput.Blur()
