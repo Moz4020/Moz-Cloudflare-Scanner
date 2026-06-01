@@ -1,15 +1,16 @@
 # Moz Cloudflare Scanner
 
-Simple Windows toolkit for finding Cloudflare endpoints that work with VLESS/Trojan configs, validating them with xray, and generating v2rayN import configs.
+Simple toolkit for finding Cloudflare endpoints that work with VLESS/Trojan configs, validating them with xray, and generating v2rayN import configs.
 
 ## Download
 
-For normal use, download the latest Windows build from the GitHub **Releases** page.
+For normal use, download the latest build for your platform from the GitHub **Releases** page.
 
 Recommended release asset:
 
 ```text
 moz-cloudflare-scanner-windows-amd64.zip
+moz-cloudflare-scanner-linux-amd64-0.1.1-Beta.tar.gz
 ```
 
 Extract it, then run:
@@ -18,13 +19,21 @@ Extract it, then run:
 .\moz-cloudflare-scanner.exe
 ```
 
+Linux:
+
+```bash
+tar -xzf moz-cloudflare-scanner-linux-amd64-0.1.1-Beta.tar.gz
+chmod +x moz-cloudflare-scanner-linux-amd64
+./moz-cloudflare-scanner-linux-amd64
+```
+
 ## Features
 
 - Scan Cloudflare IPs using a config aware Phase 1 probe.
 - Validate candidates through xray in Phase 2.
 - Copy working `IP:port` endpoints and save them to `ips.txt`.
 - Generate `configs.txt` for v2rayN from one working VLESS config plus `ips.txt`.
-- Supports Windows-focused local usage without CI, installers, or Linux/macOS packaging.
+- Supports Windows desktop usage and Linux amd64 VPS usage without installers.
 
 ## Usage
 
@@ -70,10 +79,9 @@ Moz Fast 3
 
 Requirements:
 
-- Windows
-- Go installed and available in PowerShell
+- Go 1.26.3 or newer
 
-Build:
+Windows build:
 
 ```powershell
 .\build.ps1
@@ -83,6 +91,27 @@ The executable is written to:
 
 ```text
 dist\moz-cloudflare-scanner.exe
+```
+
+Linux build on Ubuntu or another Linux host:
+
+```bash
+bash build-linux.sh
+```
+
+The executable is written to:
+
+```text
+dist/moz-cloudflare-scanner-linux-amd64
+```
+
+Cross-compile Linux from Windows PowerShell:
+
+```powershell
+$env:CGO_ENABLED='0'
+$env:GOOS='linux'
+$env:GOARCH='amd64'
+go build -trimpath -o dist/moz-cloudflare-scanner-linux-amd64 ./cmd/moz-cloudflare-scanner
 ```
 
 Run tests:
@@ -107,9 +136,44 @@ dist\moz-cloudflare-scanner-windows-amd64.zip
 
 Upload that zip to a GitHub Release so users do not need to compile the app.
 
+## Create a Linux Release Tarball
+
+Build and package a Linux amd64 release tarball:
+
+```bash
+bash release-linux.sh
+```
+
+The release tarball is written to:
+
+```text
+dist/moz-cloudflare-scanner-linux-amd64-0.1.1-Beta.tar.gz
+```
+
+## Run on an Ubuntu 24.04 VPS
+
+If you use the release tarball, Go is not required on the VPS:
+
+```bash
+sudo apt update
+sudo apt install -y ca-certificates tar
+tar -xzf moz-cloudflare-scanner-linux-amd64-0.1.1-Beta.tar.gz
+chmod +x moz-cloudflare-scanner-linux-amd64
+./moz-cloudflare-scanner-linux-amd64
+```
+
+If you build on the VPS instead, install Go 1.26.3 or newer, clone the repo, then run:
+
+```bash
+bash build-linux.sh
+./dist/moz-cloudflare-scanner-linux-amd64
+```
+
+This is a terminal TUI, so run it inside a real SSH terminal. Clipboard copy can fail on headless Linux servers, but successful endpoint lists are still saved to `ips.txt`.
+
 ## Notes
 
-- This project is Windows-only.
+- Linux support targets Ubuntu 24.04 amd64 and other modern amd64 Linux hosts.
 - Runtime files such as `ips.txt`, generated results, `configs.txt`, and `dist\` builds should not be committed.
 - This tool is for testing your own configs and endpoints.
 
