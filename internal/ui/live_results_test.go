@@ -49,6 +49,9 @@ func TestLiveResultWriterRewritesHealthyPhase1Rows(t *testing.T) {
 		HTTPStatus: 200,
 		Colo:       "FRA",
 	})
+	if err := w.flush(); err != nil {
+		t.Fatal(err)
+	}
 	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)

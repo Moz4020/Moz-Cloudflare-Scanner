@@ -1,6 +1,7 @@
 package xraytest
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -32,6 +33,7 @@ type VLESSConfig struct {
 	ServiceName string // gRPC
 	Mode        string // gRPC multi/gun, xhttp auto
 	Authority   string // gRPC
+	XHTTPExtra  map[string]interface{}
 
 	// TLS
 	Security    string // tls, reality, none
@@ -139,6 +141,10 @@ func ParseVLESS(raw string) (*VLESSConfig, error) {
 		cfg.Path = paramOr(params, "path", "/")
 		cfg.Host = paramOr(params, "host", cfg.SNI)
 		cfg.Mode = paramOr(params, "mode", "auto")
+		cfg.XHTTPExtra, err = parseXHTTPExtra(params)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// ALPN
@@ -207,9 +213,14 @@ func (c *VLESSConfig) ToShareURL() string {
 		if c.Mode != "" {
 			params.Set("mode", c.Mode)
 		}
+		if len(c.XHTTPExtra) > 0 {
+			if extra, err := json.Marshal(c.XHTTPExtra); err == nil {
+				params.Set("extra", string(extra))
+			}
+		}
 	}
 
-	remark := url.QueryEscape(c.Remark)
+	remark := url.PathEscape(c.Remark)
 	return fmt.Sprintf("vless://%s@%s:%d?%s#%s", c.UUID, c.Address, c.Port, params.Encode(), remark)
 }
 
@@ -269,6 +280,22 @@ func paramOr(params url.Values, key, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+func parseXHTTPExtra(params url.Values) (map[string]interface{}, error) {
+	raw := strings.TrimSpace(params.Get("extra"))
+	if raw == "" {
+		return nil, nil
+	}
+
+	var extra map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &extra); err != nil {
+		return nil, fmt.Errorf("parsing xhttp extra JSON: %w", err)
+	}
+	if len(extra) == 0 {
+		return nil, nil
+	}
+	return extra, nil
 }
 
 // ParseTrojan parses a trojan:// share URL.
@@ -344,6 +371,10 @@ func ParseTrojan(raw string) (*VLESSConfig, error) {
 		cfg.Path = paramOr(params, "path", "/")
 		cfg.Host = paramOr(params, "host", cfg.SNI)
 		cfg.Mode = paramOr(params, "mode", "auto")
+		cfg.XHTTPExtra, err = parseXHTTPExtra(params)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if alpnStr := params.Get("alpn"); alpnStr != "" {

@@ -271,7 +271,7 @@ func sendColosDone(scanID int64) {
 
 // runConfigPhase1 runs Phase 1 of "Scan with Config": a fast connectivity scan
 // that finds healthy Cloudflare IPs (or validates IPs from a file), then signals
-// the UI to start Phase 2 (xray validation) with the best candidates.
+// the UI to start Phase 2 (xray validation) with selected candidates.
 func runConfigPhase1(opts configPhase1Options) {
 	var probeCfg prober.Config
 	var err error
@@ -344,6 +344,9 @@ func runConfigPhase1(opts configPhase1Options) {
 		}
 	}
 	runConfigPortProbes(ctx, ipStream, ports, opts.concurrency, probeCfg, callback, neighbor)
+	if liveResultWriter != nil {
+		_ = liveResultWriter.flush()
+	}
 
 	if prog != nil {
 		prog.Send(ConfigPhase1DoneMsg{})
@@ -511,16 +514,22 @@ func configProbeFromURL(rawURL string, timeout time.Duration) (prober.Config, er
 
 	probeCfg := prober.Config{
 		Port:               cfg.Port,
-		Mode:               prober.ModeHTTP,
-		Tries:              3,
+		Mode:               prober.ModeTLS,
+		Tries:              1,
 		Timeout:            timeout,
 		SNI:                sni,
 		InsecureSkipVerify: true,
 	}
 	if cfg.Network == "ws" {
+		probeCfg.Mode = prober.ModeHTTP
+		probeCfg.Tries = 2
+		probeCfg.AcceptCFHTTPError = true
 		probeCfg.WebSocketHost = cfg.Host
 		probeCfg.WebSocketPath = cfg.Path
 		probeCfg.RequireWebSocket = true
+	} else if cfg.Network == "xhttp" || cfg.Network == "splithttp" || cfg.Network == "grpc" {
+		probeCfg.Mode = prober.ModeHTTP
+		probeCfg.AcceptCFHTTPError = true
 	}
 	return probeCfg, nil
 }
@@ -583,6 +592,21 @@ func loadDefaultIPsFile() ([]net.IP, error) {
 	return nil, fmt.Errorf("ips.txt not found — place it next to the binary or run folder")
 }
 
+type configEndpoint struct {
+	IP   net.IP
+	Port int
+}
+
+func loadDefaultEndpointsFile(defaultPort int) ([]configEndpoint, string, error) {
+	for _, path := range ipsFileSearchPaths() {
+		endpoints, err := loadEndpoints(path, defaultPort)
+		if err == nil {
+			return endpoints, path, nil
+		}
+	}
+	return nil, "", fmt.Errorf("ips.txt not found — place it next to the binary or run folder")
+}
+
 func loadIPs(path string) ([]net.IP, error) {
 	var f *os.File
 	var err error
@@ -608,6 +632,77 @@ func loadIPs(path string) ([]net.IP, error) {
 		}
 	}
 	return ips, sc.Err()
+}
+
+func loadEndpoints(path string, defaultPort int) ([]configEndpoint, error) {
+	var f *os.File
+	var err error
+	if path == "" || path == "-" {
+		f = os.Stdin
+	} else {
+		f, err = os.Open(path)
+		if err != nil {
+			return nil, fmt.Errorf("open %s: %w", path, err)
+		}
+		defer f.Close()
+	}
+	if defaultPort <= 0 {
+		defaultPort = 443
+	}
+
+	var endpoints []configEndpoint
+	seen := make(map[string]struct{})
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		endpoint, ok := parseEndpointLine(sc.Text(), defaultPort)
+		if !ok {
+			continue
+		}
+		key := fmt.Sprintf("%s:%d", endpoint.IP.String(), endpoint.Port)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		endpoints = append(endpoints, endpoint)
+	}
+	return endpoints, sc.Err()
+}
+
+func parseEndpointLine(line string, defaultPort int) (configEndpoint, bool) {
+	line = strings.TrimSpace(line)
+	if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(strings.ToLower(line), "ip") {
+		return configEndpoint{}, false
+	}
+	field := strings.TrimSpace(strings.SplitN(line, ",", 2)[0])
+	if parts := strings.Fields(field); len(parts) > 0 {
+		field = parts[0]
+	}
+	if field == "" {
+		return configEndpoint{}, false
+	}
+	if ip := net.ParseIP(field); ip != nil {
+		return configEndpoint{IP: ip, Port: defaultPort}, true
+	}
+
+	host, portStr, err := net.SplitHostPort(field)
+	if err != nil && strings.Count(field, ":") == 1 {
+		idx := strings.LastIndex(field, ":")
+		host, portStr = field[:idx], field[idx+1:]
+		err = nil
+	}
+	if err != nil {
+		return configEndpoint{}, false
+	}
+	host = strings.Trim(host, "[]")
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return configEndpoint{}, false
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 || port > 65535 {
+		return configEndpoint{}, false
+	}
+	return configEndpoint{IP: ip, Port: port}, true
 }
 
 func speedSampleForMode(mode prober.Mode) int64 {

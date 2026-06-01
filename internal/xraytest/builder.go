@@ -152,12 +152,13 @@ func buildStreamSettings(cfg *VLESSConfig) map[string]interface{} {
 			"path": cfg.Path,
 		}
 		if cfg.Host != "" {
-			xhttp["headers"] = map[string]interface{}{
-				"Host": cfg.Host,
-			}
+			xhttp["host"] = cfg.Host
 		}
 		if cfg.Mode != "" {
 			xhttp["mode"] = cfg.Mode
+		}
+		if len(cfg.XHTTPExtra) > 0 {
+			xhttp["extra"] = cfg.XHTTPExtra
 		}
 		stream["xhttpSettings"] = xhttp
 	}

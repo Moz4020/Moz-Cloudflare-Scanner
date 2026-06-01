@@ -111,6 +111,23 @@ func TestHTTPHealthRequiresCloudflareValidation(t *testing.T) {
 	}
 }
 
+func TestHTTPHealthAcceptsCloudflareErrorForConfigPhase1(t *testing.T) {
+	r := makeResult([]time.Duration{100 * time.Millisecond, 120 * time.Millisecond})
+	r.ProbeMode = "http"
+	r.HTTPStatus = 404
+	r.TLSOk = true
+	r.Colo = "FRA"
+
+	if r.IsHealthy() {
+		t.Fatal("expected HTTP 404 to be unhealthy by default")
+	}
+
+	r.AcceptCF = true
+	if !r.IsHealthy() {
+		t.Fatal("expected Cloudflare HTTP error to be healthy when config Phase 1 allows it")
+	}
+}
+
 func TestHTTPHealthRequiresTLSOnNonPlainHTTPPorts(t *testing.T) {
 	r := makeResult([]time.Duration{100 * time.Millisecond})
 	r.ProbeMode = "http"

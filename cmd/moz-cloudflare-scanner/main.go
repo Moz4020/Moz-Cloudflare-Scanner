@@ -22,7 +22,6 @@ func main() {
 	p := tea.NewProgram(
 		model,
 		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
 	)
 
 	// Give the UI package a reference so background goroutines can send messages.

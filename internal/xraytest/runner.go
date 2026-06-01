@@ -23,9 +23,11 @@ var portCounter atomic.Int32
 
 const (
 	speedSampleBytes     = 512 * 1024
-	speedSampleBytesFast = 128 * 1024
+	speedSampleBytesFast = 64 * 1024
 	speedMinBytes        = 8 * 1024
 	traceProbeURL        = "https://cp.cloudflare.com/cdn-cgi/trace"
+	connectivityTimeout  = 5 * time.Second
+	transportTimeout     = 3 * time.Second
 )
 
 func init() {
@@ -54,7 +56,7 @@ type ValidationResult struct {
 // traffic through it, and returns the result. Retries once on failure.
 func ValidateConfig(ctx context.Context, cfg *VLESSConfig, timeout time.Duration) *ValidationResult {
 	res := validateOnce(ctx, cfg, timeout)
-	if !res.Success {
+	if !res.Success && shouldRetryValidation(ctx, res.Error) {
 		// Retry once — DPI is flaky
 		time.Sleep(500 * time.Millisecond)
 		res2 := validateOnce(ctx, cfg, timeout)
@@ -65,6 +67,30 @@ func ValidateConfig(ctx context.Context, cfg *VLESSConfig, timeout time.Duration
 		res.Retries = 1
 	}
 	return res
+}
+
+func shouldRetryValidation(ctx context.Context, errText string) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	errText = strings.ToLower(errText)
+	if errText == "" {
+		return true
+	}
+	noRetry := []string{
+		"build config",
+		"decode json",
+		"start xray",
+		"tls handshake timeout",
+		"context deadline exceeded",
+		"i/o timeout",
+	}
+	for _, needle := range noRetry {
+		if strings.Contains(errText, needle) {
+			return false
+		}
+	}
+	return true
 }
 
 func validateOnce(ctx context.Context, cfg *VLESSConfig, timeout time.Duration) *ValidationResult {
@@ -96,18 +122,8 @@ func validateOnce(ctx context.Context, cfg *VLESSConfig, timeout time.Duration) 
 	}
 	tmpFile.Close()
 
-	// Suppress xray stdout/stderr
-	oldStdout := os.Stdout
-	oldStderr := os.Stderr
-	devNull, _ := os.Open(os.DevNull)
-	os.Stdout = devNull
-	os.Stderr = devNull
-
 	tmpFile2, err := os.Open(tmpFile.Name())
 	if err != nil {
-		os.Stdout = oldStdout
-		os.Stderr = oldStderr
-		devNull.Close()
 		res.Error = fmt.Sprintf("reopen config: %v", err)
 		return res
 	}
@@ -115,18 +131,12 @@ func validateOnce(ctx context.Context, cfg *VLESSConfig, timeout time.Duration) 
 	jsonConfig, err := serial.DecodeJSONConfig(tmpFile2)
 	tmpFile2.Close()
 	if err != nil {
-		os.Stdout = oldStdout
-		os.Stderr = oldStderr
-		devNull.Close()
 		res.Error = fmt.Sprintf("decode json config: %v", err)
 		return res
 	}
 
 	pbConfig, err := jsonConfig.Build()
 	if err != nil {
-		os.Stdout = oldStdout
-		os.Stderr = oldStderr
-		devNull.Close()
 		res.Error = fmt.Sprintf("build config: %v", err)
 		return res
 	}
@@ -138,17 +148,10 @@ func validateOnce(ctx context.Context, cfg *VLESSConfig, timeout time.Duration) 
 	}
 
 	if err := instance.Start(); err != nil {
-		os.Stdout = oldStdout
-		os.Stderr = oldStderr
-		devNull.Close()
 		res.Error = fmt.Sprintf("start xray: %v", err)
 		return res
 	}
 	defer instance.Close()
-
-	os.Stdout = oldStdout
-	os.Stderr = oldStderr
-	devNull.Close()
 
 	if !waitForPort(socksPort, 3*time.Second) {
 		res.Error = "socks port not ready after 3s"
@@ -182,10 +185,11 @@ func validateOnce(ctx context.Context, cfg *VLESSConfig, timeout time.Duration) 
 // SOCKS5 proxy to cp.cloudflare.com. It returns true when the response body
 // contains "colo=", proving that real Cloudflare traffic flowed through the proxy.
 func proxyConnectivityCheck(ctx context.Context, proxyAddr string) (bool, time.Duration, error) {
-	transport := proxyTransport(proxyAddr)
+	clientTimeout := minDuration(clientTimeoutForContext(ctx, connectivityTimeout), connectivityTimeout)
+	transport := proxyTransport(proxyAddr, minDuration(clientTimeout, transportTimeout))
 	client := &http.Client{
 		Transport: transport,
-		Timeout:   clientTimeoutForContext(ctx, 15*time.Second),
+		Timeout:   clientTimeout,
 	}
 
 	start := time.Now()
@@ -249,7 +253,7 @@ func speedBudget(total, spent time.Duration) time.Duration {
 }
 
 func measureProxySpeed(ctx context.Context, proxyAddr string, cfg *VLESSConfig) (int64, float64) {
-	samples := []int64{speedSampleBytes, speedSampleBytesFast}
+	samples := []int64{speedSampleBytesFast, speedSampleBytes}
 	for _, sample := range samples {
 		for _, target := range speedTestTargets(cfg, sample) {
 			bytesRecv, throughput, err := downloadThroughProxy(ctx, proxyAddr, target.url, sample, target.relaxed)
@@ -356,13 +360,16 @@ func burstProxyThroughput(ctx context.Context, proxyAddr, url string, targetByte
 	return total, float64(total) / elapsed
 }
 
-func proxyTransport(proxyAddr string) *http.Transport {
+func proxyTransport(proxyAddr string, timeout time.Duration) *http.Transport {
+	if timeout <= 0 {
+		timeout = transportTimeout
+	}
 	return &http.Transport{
 		Proxy: func(req *http.Request) (*url.URL, error) {
 			return url.Parse(proxyAddr)
 		},
-		DialContext:         (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
-		TLSHandshakeTimeout: 10 * time.Second,
+		DialContext:         (&net.Dialer{Timeout: timeout}).DialContext,
+		TLSHandshakeTimeout: timeout,
 		DisableKeepAlives:   true,
 	}
 }
@@ -378,6 +385,19 @@ func clientTimeoutForContext(ctx context.Context, fallback time.Duration) time.D
 	return fallback
 }
 
+func minDuration(a, b time.Duration) time.Duration {
+	if a <= 0 {
+		return b
+	}
+	if b <= 0 {
+		return a
+	}
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // downloadThroughProxy fetches a URL through a SOCKS5 proxy and returns bytes
 // received plus throughput in bytes/sec. When relaxed is true, any HTTP response
 // with a readable body counts (needed for WS endpoints that answer 400/404).
@@ -387,8 +407,8 @@ func downloadThroughProxy(ctx context.Context, proxyAddr, dlURL string, maxBytes
 	}
 
 	client := &http.Client{
-		Transport: proxyTransport(proxyAddr),
-		Timeout:   clientTimeoutForContext(ctx, 30*time.Second),
+		Transport: proxyTransport(proxyAddr, transportTimeout),
+		Timeout:   minDuration(clientTimeoutForContext(ctx, 8*time.Second), 8*time.Second),
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, dlURL, nil)

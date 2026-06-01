@@ -2,6 +2,7 @@ package xraytest
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -49,7 +50,7 @@ func TestParseVLESS_GRPC(t *testing.T) {
 }
 
 func TestParseVLESS_XHTTP(t *testing.T) {
-	raw := "vless://abcdef12-3456-7890-abcd-ef1234567890@test.example.org:2053?encryption=none&security=tls&sni=test.example.org&fp=chrome&alpn=h2%2Chttp%2F1.1&insecure=1&allowInsecure=1&type=xhttp&host=test.example.org&path=%2Fdownload&mode=auto#CF-XHTTP-o9xk21gf"
+	raw := "vless://abcdef12-3456-7890-abcd-ef1234567890@test.example.org:2053?encryption=none&security=tls&sni=test.example.org&fp=chrome&alpn=h2%2Chttp%2F1.1&insecure=1&allowInsecure=1&type=xhttp&host=test.example.org&path=%2Fdownload&mode=auto&extra=%7B%22scMaxEachPostBytes%22%3A%221000000%22%2C%22scMinPostsIntervalMs%22%3A%2230%22%2C%22xPaddingBytes%22%3A%22100-1000%22%7D#CF-XHTTP-o9xk21gf"
 
 	cfg, err := ParseVLESS(raw)
 	if err != nil {
@@ -62,6 +63,16 @@ func TestParseVLESS_XHTTP(t *testing.T) {
 	assertEqual(t, "Path", cfg.Path, "/download")
 	assertEqual(t, "Host", cfg.Host, "test.example.org")
 	assertEqual(t, "Mode", cfg.Mode, "auto")
+	assertEqual(t, "XHTTPExtra.scMaxEachPostBytes", cfg.XHTTPExtra["scMaxEachPostBytes"].(string), "1000000")
+	assertEqual(t, "XHTTPExtra.scMinPostsIntervalMs", cfg.XHTTPExtra["scMinPostsIntervalMs"].(string), "30")
+	assertEqual(t, "XHTTPExtra.xPaddingBytes", cfg.XHTTPExtra["xPaddingBytes"].(string), "100-1000")
+
+	rebuilt := cfg.ToShareURL()
+	roundTrip, err := ParseVLESS(rebuilt)
+	if err != nil {
+		t.Fatalf("round-trip ParseVLESS failed: %v", err)
+	}
+	assertEqual(t, "round-trip XHTTPExtra.xPaddingBytes", roundTrip.XHTTPExtra["xPaddingBytes"].(string), "100-1000")
 }
 
 func TestWithAddress(t *testing.T) {
@@ -79,6 +90,30 @@ func TestWithAddress(t *testing.T) {
 	assertEqual(t, "port preserved", itoa(swapped.Port), "443")
 	assertEqual(t, "SNI preserved", swapped.SNI, "example.com")
 	assertEqual(t, "Host preserved", swapped.Host, "example.com")
+}
+
+func TestToShareURLRemarkUsesPercentSpaces(t *testing.T) {
+	raw := "vless://12345678-1234-1234-1234-123456789abc@example.com:443?encryption=none&security=tls&sni=example.com&type=xhttp&path=%2Fdownload&host=example.com#Moz%20Fast%201"
+
+	cfg, err := ParseVLESS(raw)
+	if err != nil {
+		t.Fatalf("ParseVLESS failed: %v", err)
+	}
+	cfg.Remark = "Moz Fast 1"
+
+	rebuilt := cfg.ToShareURL()
+	if strings.Contains(rebuilt, "#Moz+Fast+1") {
+		t.Fatalf("remark used + escaping: %s", rebuilt)
+	}
+	if !strings.Contains(rebuilt, "#Moz%20Fast%201") {
+		t.Fatalf("remark did not use percent-space escaping: %s", rebuilt)
+	}
+
+	roundTrip, err := ParseVLESS(rebuilt)
+	if err != nil {
+		t.Fatalf("round-trip ParseVLESS failed: %v", err)
+	}
+	assertEqual(t, "round-trip remark", roundTrip.Remark, "Moz Fast 1")
 }
 
 func TestParseVLESS_Invalid(t *testing.T) {

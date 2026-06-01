@@ -13,6 +13,7 @@ const (
 	PageLiveColos
 	PageAbout
 	PageScanWithConfig // setup: source, count, workers, timeout, ports
+	PageGenerateConfigs
 	PageConfigOptional // optional config URL + Phase 2 top N
 	PageConfigSetup    // legacy setup (unused)
 	PageConfigPhase1   // xray config - fast connectivity scan

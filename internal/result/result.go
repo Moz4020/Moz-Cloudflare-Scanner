@@ -20,6 +20,7 @@ type Result struct {
 	Colo        string
 	Throughput  float64 // bytes/sec, 0 if not measured
 	SpeedTested bool    // true when a payload download check was attempted
+	AcceptCF    bool    // true when any Cloudflare HTTP response is enough for Phase 1
 	Timestamp   time.Time
 }
 
@@ -111,7 +112,10 @@ func (r *Result) IsHealthy() bool {
 		if r.Port != 80 && !r.TLSOk {
 			return false
 		}
-		if r.HTTPStatus < 200 || r.HTTPStatus >= 400 || r.Colo == "" {
+		if r.Colo == "" {
+			return false
+		}
+		if (r.HTTPStatus < 200 || r.HTTPStatus >= 400) && !r.AcceptCF {
 			return false
 		}
 		if r.SpeedTested && r.Throughput <= 0 {

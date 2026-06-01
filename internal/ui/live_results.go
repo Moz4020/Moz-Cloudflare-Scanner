@@ -33,6 +33,8 @@ type LiveResultWriter struct {
 	phase1Rows   []*result.Result
 	phase2Rows   []*xraytest.ValidationResult
 	phase1Probed int
+	lastFlush    time.Time
+	pendingFlush int
 }
 
 func newLiveResultWriter(withConfig bool) (*LiveResultWriter, string, error) {
@@ -95,7 +97,7 @@ func (w *LiveResultWriter) AddPhase1(r *result.Result) {
 	if r.IsHealthy() {
 		w.phase1Rows = append(w.phase1Rows, r)
 	}
-	_ = w.writeLocked()
+	_ = w.writeLockedThrottled()
 }
 
 func (w *LiveResultWriter) BeginPhase2() {
@@ -107,7 +109,7 @@ func (w *LiveResultWriter) BeginPhase2() {
 	w.phase = 2
 	w.phase1Done = true
 	w.phase2Rows = nil
-	_ = w.writeLocked()
+	_ = w.writeLockedNow()
 }
 
 func (w *LiveResultWriter) FinishPhase1Only() {
@@ -118,7 +120,7 @@ func (w *LiveResultWriter) FinishPhase1Only() {
 	defer w.mu.Unlock()
 	w.phase1Only = true
 	w.phase1Done = true
-	_ = w.writeLocked()
+	_ = w.writeLockedNow()
 }
 
 func (w *LiveResultWriter) AddPhase2(v *xraytest.ValidationResult) {
@@ -128,31 +130,49 @@ func (w *LiveResultWriter) AddPhase2(v *xraytest.ValidationResult) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.phase2Rows = append(w.phase2Rows, v)
-	_ = w.writeLocked()
+	_ = w.writeLockedThrottled()
 }
 
 func (w *LiveResultWriter) flush() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.writeLocked()
+	return w.writeLockedNow()
 }
 
-func (w *LiveResultWriter) writeLocked() error {
+func (w *LiveResultWriter) writeLockedThrottled() error {
+	w.pendingFlush++
+	if w.pendingFlush < 5 && time.Since(w.lastFlush) < 300*time.Millisecond {
+		return nil
+	}
+	return w.writeLockedNow()
+}
+
+func (w *LiveResultWriter) writeLockedNow() error {
+	w.pendingFlush = 0
+	w.lastFlush = time.Now()
+
 	var sb strings.Builder
 	sb.WriteString("Moz Cloudflare Scanner — live results\n")
 	sb.WriteString(fmt.Sprintf("Started: %s\n", w.started.Format("2006-01-02 15:04:05")))
 	sb.WriteString(fmt.Sprintf("Updated: %s\n", time.Now().Format("2006-01-02 15:04:05")))
 	if w.withConfig {
 		sb.WriteString("Plan: Phase 1 connectivity, then Phase 2 xray validation\n")
+		sb.WriteString("Note: Phase 1 entries are candidates. Phase 2 decides what actually works.\n")
 	} else {
 		sb.WriteString("Plan: Phase 1 connectivity only\n")
 	}
 	sb.WriteString("\n")
 
 	healthy := len(w.phase1Rows)
-	sb.WriteString(fmt.Sprintf("=== Phase 1 — connectivity (%d healthy / %d probed) ===\n\n", healthy, w.phase1Probed))
-	sb.WriteString(fmt.Sprintf("  %-22s  %7s  %9s  %8s  %6s\n", "ENDPOINT", "LOSS", "AVG(ms)", "COLO", "STATUS"))
-	sb.WriteString("  " + strings.Repeat("─", 64) + "\n")
+	label := "healthy"
+	statusLabel := "STATUS"
+	if w.withConfig {
+		label = "candidates"
+		statusLabel = "PHASE 1"
+	}
+	sb.WriteString(fmt.Sprintf("=== Phase 1 — connectivity (%d %s / %d probed) ===\n\n", healthy, label, w.phase1Probed))
+	sb.WriteString(endpointHeader(statusLabel) + "\n")
+	sb.WriteString(tableSeparator(76) + "\n")
 
 	rows := append([]*result.Result(nil), w.phase1Rows...)
 	sort.Slice(rows, func(i, j int) bool {
@@ -162,48 +182,53 @@ func (w *LiveResultWriter) writeLocked() error {
 		sb.WriteString("  (no healthy results yet)\n")
 	} else {
 		for _, r := range rows {
-			colo := r.Colo
-			if colo == "" {
-				colo = "—"
-			}
 			status := "healthy"
+			if w.withConfig {
+				status = "candidate"
+			}
 			if !r.IsHealthy() {
 				status = "fail"
 			}
-			sb.WriteString(fmt.Sprintf("  %-22s  %6.1f%%  %9.2f  %-8s  %s\n",
-				formatEndpoint(r.IP.String(), r.Port),
-				r.Loss(),
-				float64(r.Avg().Milliseconds()),
-				colo,
-				status,
-			))
+			sb.WriteString(endpointCandidateRow(r, status) + "\n")
 		}
 	}
 
 	if w.phase >= 2 && !w.phase1Only {
 		sb.WriteString("\n")
 		sb.WriteString(fmt.Sprintf("=== Phase 2 — xray validation (%d tested) ===\n\n", len(w.phase2Rows)))
-		sb.WriteString(fmt.Sprintf("  %-22s  %-8s  %8s  %8s  %6s\n", "ENDPOINT", "TYPE", "SPEED", "LATENCY", "STATUS"))
-		sb.WriteString("  " + strings.Repeat("─", 64) + "\n")
+		success, failed, skipped := validationOutcomeCounts(w.phase2Rows)
+		sb.WriteString(fmt.Sprintf("Summary: working %d, failed %d, skipped %d, success %.1f%%\n\n",
+			success, failed, skipped, validationSuccessRate(success, failed)))
+		sb.WriteString(validationHeader() + "\n")
+		sb.WriteString(tableSeparator(76) + "\n")
 		if len(w.phase2Rows) == 0 {
 			sb.WriteString("  (no validation results yet)\n")
 		} else {
+			var failures []string
 			for _, r := range w.phase2Rows {
 				status := "fail"
-				speed := "—"
-				latency := "—"
 				if r.Success {
-					status = "ok"
-					speed = formatValidationSpeed(r.Throughput)
-					latency = formatValidationLatency(r.Latency)
+					status = "working"
+				} else if isSkippedValidation(r) {
+					status = "skipped"
+				} else if r.Error != "" {
+					status = r.Error
+					failures = append(failures, fmt.Sprintf("%s: %s", formatEndpoint(r.IP, r.Port), r.Error))
+					if len(status) > statusColWidth {
+						status = status[:statusColWidth-1] + "..."
+					}
 				}
-				sb.WriteString(fmt.Sprintf("  %-22s  %-8s  %8s  %8s  %6s\n",
-					formatEndpoint(r.IP, r.Port),
-					r.Transport,
-					speed,
-					latency,
-					status,
-				))
+				sb.WriteString(validationRow(r, status) + "\n")
+			}
+			if len(failures) > 0 {
+				sb.WriteString("\nLatest failures:\n")
+				start := len(failures) - 5
+				if start < 0 {
+					start = 0
+				}
+				for _, failure := range failures[start:] {
+					sb.WriteString("  " + failure + "\n")
+				}
 			}
 		}
 	}

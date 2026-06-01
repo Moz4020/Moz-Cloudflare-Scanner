@@ -3,10 +3,13 @@ package ui
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/atotto/clipboard"
@@ -220,6 +223,12 @@ type AppModel struct {
 	configScanning bool
 	configDone     bool
 	configTotal    int
+	// v2ray config generator
+	generatorInput       textinput.Model
+	generatorPrefixInput textinput.Model
+	generatorRow         int // 0=config, 1=name prefix, 2=generate
+	generatorOutputPath  string
+	generatorCount       int
 	// config setup options
 	configURL      string
 	configCountIdx int // index into configCountValues
@@ -236,7 +245,7 @@ type AppModel struct {
 	configWorkersCustom string // value when Custom workers is selected
 	configTimeoutCustom string // value when Custom timeout is selected
 	configTopNCustom    string // value when Custom top N is selected
-	configOptionalRow   int    // 0=config URL, 1=validate top N
+	configOptionalRow   int    // 0=config URL, 1=validate top N, 2=start
 	configPortFocus     int
 	configSelectedPorts map[int]bool
 	// phase 1 state
@@ -259,16 +268,18 @@ type menuEntry struct {
 
 var menuEntries = []menuEntry{
 	{"Find Working IPs", "scan Cloudflare IPs — config optional"},
+	{"Generate V2Ray Configs", "turn ips.txt + one VLESS URL into configs.txt"},
 	{"About", ""},
 	{"Quit", ""},
 }
 
-const menuLabelWidth = 16
+const menuLabelWidth = 22
 
 const (
 	menuFindWorking = 0
-	menuAbout       = 1
-	menuQuit        = 2
+	menuGenerate    = 1
+	menuAbout       = 2
+	menuQuit        = 3
 )
 
 var modes = []string{"tls", "tcp", "http"}
@@ -306,6 +317,18 @@ func NewApp(version string) AppModel {
 	cfgInput.CharLimit = 2000
 	cfgInput.Width = 0 // 0 = no fixed width, grows with content
 	m.configInput = cfgInput
+
+	genInput := textinput.New()
+	genInput.Placeholder = "paste your working vless:// config"
+	genInput.CharLimit = 2000
+	genInput.Width = 0
+	m.generatorInput = genInput
+
+	genPrefixInput := textinput.New()
+	genPrefixInput.Placeholder = "e.g. Test-fast"
+	genPrefixInput.CharLimit = 80
+	genPrefixInput.Width = 34
+	m.generatorPrefixInput = genPrefixInput
 
 	cfgCustom := textinput.New()
 	cfgCustom.Placeholder = "enter value"
@@ -453,31 +476,27 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		topN := m.resolveTopN()
-		var topIPs []*result.Result
-		if topN == 0 {
-			topIPs = result.TopN(m.configPhase1Results, 0)
-		} else {
-			topIPs = result.TopN(m.configPhase1Results, topN)
-		}
-		m.configTotal = len(topIPs)
+		phase2IPs := selectPhase2Candidates(m.configPhase1Results, topN)
+		m.configTotal = len(phase2IPs)
 		// If Phase 1 found no healthy IPs, stay on the Phase 1 page and show
 		// a clear "no results" message (Phase 2 would have nothing to do).
-		if len(topIPs) == 0 {
+		if len(phase2IPs) == 0 {
 			m.configPhase1Done = true
 			m.page = PageConfigPhase2
 			m.configScanning = false
 			m.configDone = true
 			return m, nil
 		}
-		// Start Phase 2 with top N IPs
+		// Start Phase 2 with candidates spread across latency and IP ranges.
 		if liveResultWriter != nil {
 			liveResultWriter.BeginPhase2()
 		}
 		m.page = PageConfigPhase2
+		m.scanStarted = time.Now()
 		m.configScanning = true
 		m.configDone = false
 		m.configResults = nil
-		return m, m.startConfigPhase2(topIPs)
+		return m, m.startConfigPhase2(phase2IPs)
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -511,6 +530,8 @@ func (m AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case PageScanWithConfig:
 		return m.handleScanWithConfigKey(msg)
+	case PageGenerateConfigs:
+		return m.handleGenerateConfigsKey(msg)
 	case PageConfigOptional:
 		return m.handleConfigOptionalKey(msg)
 	case PageConfigPhase1:
@@ -570,6 +591,17 @@ func (m AppModel) selectMenuItem() (tea.Model, tea.Cmd) {
 		clearLiveResultWriter()
 		m.statusMsg = ""
 		return m, nil
+	case menuGenerate:
+		m.page = PageGenerateConfigs
+		m.generatorInput.SetValue("")
+		m.generatorInput.Focus()
+		m.generatorPrefixInput.SetValue("")
+		m.generatorPrefixInput.Blur()
+		m.generatorRow = 0
+		m.generatorOutputPath = ""
+		m.generatorCount = 0
+		m.statusMsg = ""
+		return m, textinput.Blink
 	case menuAbout:
 		m.page = PageAbout
 	case menuQuit:
@@ -965,6 +997,92 @@ func formatEndpoint(ip string, port int) string {
 	return fmt.Sprintf("%s:%d", ip, port)
 }
 
+const (
+	endpointColWidth  = 24
+	transportColWidth = 7
+	metricColWidth    = 9
+	statusColWidth    = 14
+)
+
+func endpointHeader(statusLabel string) string {
+	return fmt.Sprintf("  %-*s  %7s  %9s  %-6s  %-*s",
+		endpointColWidth, "ENDPOINT",
+		"LOSS",
+		"LATENCY",
+		"COLO",
+		statusColWidth, statusLabel,
+	)
+}
+
+func endpointCandidateRow(r *result.Result, status string) string {
+	colo := r.Colo
+	if colo == "" {
+		colo = "-"
+	}
+	return fmt.Sprintf("  %-*s  %6.1f%%  %8s  %-6s  %-*s",
+		endpointColWidth, formatEndpoint(r.IP.String(), r.Port),
+		r.Loss(),
+		formatDurationShort(r.Avg()),
+		colo,
+		statusColWidth, status,
+	)
+}
+
+func validationHeader() string {
+	return fmt.Sprintf("  %-*s  %-*s  %9s  %9s  %-*s",
+		endpointColWidth, "ENDPOINT",
+		transportColWidth, "TYPE",
+		"SPEED",
+		"LATENCY",
+		statusColWidth, "STATUS",
+	)
+}
+
+func validationRow(r *xraytest.ValidationResult, status string) string {
+	speed := "-"
+	latency := "-"
+	if r.Success {
+		speed = formatValidationSpeed(r.Throughput)
+		latency = formatValidationLatency(r.Latency)
+	}
+	return fmt.Sprintf("  %-*s  %-*s  %9s  %9s  %-*s",
+		endpointColWidth, formatEndpoint(r.IP, r.Port),
+		transportColWidth, r.Transport,
+		speed,
+		latency,
+		statusColWidth, status,
+	)
+}
+
+func tableSeparator(width int) string {
+	if width < 40 {
+		width = 40
+	}
+	return "  " + strings.Repeat("─", width)
+}
+
+func formatDurationShort(d time.Duration) string {
+	if d <= 0 {
+		return "-"
+	}
+	if d < time.Second {
+		return fmt.Sprintf("%dms", d.Milliseconds())
+	}
+	return fmt.Sprintf("%.1fs", d.Seconds())
+}
+
+func truncateMiddle(s string, max int) string {
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	if max <= 3 {
+		return s[:max]
+	}
+	left := (max - 3) / 2
+	right := max - 3 - left
+	return s[:left] + "..." + s[len(s)-right:]
+}
+
 func formatValidationSpeed(throughput float64) string {
 	if throughput <= 0 {
 		return "n/a"
@@ -1118,6 +1236,8 @@ func (m AppModel) View() string {
 		return m.viewAbout()
 	case PageScanWithConfig:
 		return m.viewScanWithConfig()
+	case PageGenerateConfigs:
+		return m.viewGenerateConfigs()
 	case PageConfigOptional:
 		return m.viewConfigOptional()
 	case PageConfigPhase1:
@@ -1135,13 +1255,15 @@ func (m AppModel) View() string {
 func (m AppModel) viewHome() string {
 	var sb strings.Builder
 
-	// Animated banner (shrink if terminal too narrow)
-	art := banner.Render(m.bannerFrame / 2)
-	sb.WriteString(art)
 	sb.WriteRune('\n')
-
-	// Version — keep newlines outside styled output; lipgloss pads blank lines with spaces.
-	sb.WriteString(styleDim.Render(fmt.Sprintf("  v%s", m.version)))
+	for _, line := range mainMenuASCII {
+		sb.WriteString("  " + gradientText(line, m.bannerFrame/3, []string{
+			"#B066FF", "#8F7CFF", "#6C8DFF", "#4B9BFF", "#35B8FF",
+		}) + "\n")
+	}
+	sb.WriteString(styleDim.Render("  simple Cloudflare endpoint toolkit"))
+	sb.WriteString("\n")
+	sb.WriteString(styleAccent.Render("  0.1.0 Beta"))
 	sb.WriteString("\n\n")
 
 	// Menu
@@ -1166,6 +1288,206 @@ func (m AppModel) viewHome() string {
 	sb.WriteRune('\n')
 
 	return sb.String()
+}
+
+var mainMenuASCII = []string{
+	" __  __  ___  ____",
+	"|  \\/  |/ _ \\|_  /",
+	"| |\\/| | (_) |/ / ",
+	"|_|  |_|\\___//___|",
+	" Cloudflare Scanner",
+}
+
+func gradientText(text string, frame int, palette []string) string {
+	if len(palette) == 0 {
+		return text
+	}
+	var sb strings.Builder
+	runes := []rune(text)
+	for i, r := range runes {
+		idx := i * (len(palette) - 1) / maxInt(len(runes)-1, 1)
+		idx = (idx + frame) % len(palette)
+		if idx < 0 {
+			idx += len(palette)
+		}
+		sb.WriteString(lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color(palette[idx])).
+			Render(string(r)))
+	}
+	return sb.String()
+}
+
+// ---------------------------------------------------------------------------
+// V2Ray config generator
+// ---------------------------------------------------------------------------
+
+func (m AppModel) viewGenerateConfigs() string {
+	var sb strings.Builder
+
+	sb.WriteString(styleTitle.Render("\n  Generate V2Ray Configs\n"))
+	sb.WriteString(fmt.Sprintf("%s\n\n", styleSep.Render("  "+strings.Repeat("─", minInt(m.width-4, 76)))))
+
+	rowLabel := func(row int, text string) {
+		if m.generatorRow == row {
+			sb.WriteString(styleAccent.Render(text))
+		} else {
+			sb.WriteString(styleDim.Render(text))
+		}
+	}
+
+	rowLabel(0, "  Config ")
+	sb.WriteString(m.generatorInput.View() + "\n")
+	if summary := parsedConfigSummary(m.generatorInput.Value()); summary != "" {
+		sb.WriteString(styleDim.Render("         "+summary) + "\n\n")
+	} else {
+		sb.WriteString(styleDim.Render("         paste one working VLESS config; endpoints come from ips.txt") + "\n\n")
+	}
+
+	rowLabel(1, "  Prefix ")
+	sb.WriteString(m.generatorPrefixInput.View() + "\n")
+	prefixPreview := strings.TrimSpace(m.generatorPrefixInput.Value())
+	if prefixPreview == "" {
+		prefixPreview = "Main-Moz"
+	}
+	sb.WriteString(styleDim.Render(fmt.Sprintf("         generated remarks look like: %s 1, %s 2, ...", prefixPreview, prefixPreview)) + "\n\n")
+
+	rowLabel(2, "  Create ")
+	sb.WriteString(styleNormal.Render("configs.txt") + "\n")
+	sb.WriteString(styleDim.Render("         press Enter here to generate one v2rayN import URL per endpoint") + "\n\n")
+
+	sb.WriteString(styleDim.Render("  Input   ips.txt next to the exe or current run folder; supports IP or IP:port") + "\n")
+	sb.WriteString(styleDim.Render("  Output  configs.txt next to the ips.txt file") + "\n\n")
+
+	if m.generatorCount > 0 {
+		sb.WriteString(styleGood.Render(fmt.Sprintf("  ✓ Generated %d v2rayN configs successfully\n", m.generatorCount)))
+		if m.generatorOutputPath != "" {
+			sb.WriteString(styleDim.Render("  "+m.generatorOutputPath) + "\n")
+		}
+		sb.WriteRune('\n')
+	}
+	if m.statusMsg != "" {
+		sb.WriteString(styleWarn.Render("  "+m.statusMsg) + "\n\n")
+	}
+
+	hint := "  ↑/↓ row   enter select/generate   esc back"
+	if m.generatorRow == 0 {
+		hint = "  paste config   enter next   ↓ prefix   esc back"
+	} else if m.generatorRow == 1 {
+		hint = "  type prefix   enter next   ↑ config   ↓ create"
+	}
+	sb.WriteString(styleHint.Render(hint))
+	sb.WriteRune('\n')
+	return sb.String()
+}
+
+func (m AppModel) handleGenerateConfigsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.Type == tea.KeyRunes && msg.Paste {
+		m.generatorInput.SetValue(cleanPastedConfigURL(string(msg.Runes)))
+		m.generatorInput.CursorEnd()
+		m.generatorRow = 1
+		m.generatorInput.Blur()
+		m.generatorPrefixInput.Focus()
+		m.statusMsg = "config pasted — add a prefix or press Enter"
+		return m, nil
+	}
+
+	if m.generatorRow == 0 {
+		m.generatorInput.Focus()
+		m.generatorPrefixInput.Blur()
+	} else if m.generatorRow == 1 {
+		m.generatorPrefixInput.Focus()
+		m.generatorInput.Blur()
+	} else {
+		m.generatorInput.Blur()
+		m.generatorPrefixInput.Blur()
+	}
+
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc", "q":
+		m.page = PageHome
+		m.generatorInput.Blur()
+		m.generatorPrefixInput.Blur()
+		m.statusMsg = ""
+		return m, nil
+	case "up", "k":
+		if m.generatorRow > 0 {
+			m.generatorRow--
+		}
+		return m, nil
+	case "down", "j":
+		if m.generatorRow < 2 {
+			m.generatorRow++
+		}
+		return m, nil
+	case "enter":
+		if m.generatorRow < 2 {
+			m.generatorRow++
+			return m, nil
+		}
+		path, count, err := generateV2RayConfigs(strings.TrimSpace(m.generatorInput.Value()), strings.TrimSpace(m.generatorPrefixInput.Value()))
+		if err != nil {
+			m.statusMsg = err.Error()
+			m.generatorCount = 0
+			m.generatorOutputPath = ""
+			return m, nil
+		}
+		m.generatorCount = count
+		m.generatorOutputPath = path
+		m.statusMsg = ""
+		return m, nil
+	}
+
+	var cmd tea.Cmd
+	if m.generatorRow == 1 {
+		m.generatorPrefixInput, cmd = m.generatorPrefixInput.Update(msg)
+	} else if m.generatorRow == 0 {
+		m.generatorInput, cmd = m.generatorInput.Update(msg)
+	}
+	return m, cmd
+}
+
+func generateV2RayConfigs(rawURL, prefix string) (string, int, error) {
+	if strings.TrimSpace(rawURL) == "" {
+		return "", 0, fmt.Errorf("paste a working VLESS config first")
+	}
+	cfg, err := xraytest.ParseProxyURL(rawURL)
+	if err != nil {
+		return "", 0, fmt.Errorf("invalid config: %v", err)
+	}
+	endpoints, ipPath, err := loadDefaultEndpointsFile(cfg.Port)
+	if err != nil {
+		return "", 0, err
+	}
+	if len(endpoints) == 0 {
+		return "", 0, fmt.Errorf("ips.txt has no valid IPs or endpoints")
+	}
+
+	lines := make([]string, 0, len(endpoints))
+	for i, endpoint := range endpoints {
+		swapped := cfg.WithEndpoint(endpoint.IP.String(), endpoint.Port)
+		swapped.Remark = generatedConfigRemark(prefix, cfg.Remark, i+1)
+		lines = append(lines, swapped.ToShareURL())
+	}
+
+	outPath := filepath.Join(filepath.Dir(ipPath), "configs.txt")
+	if err := os.WriteFile(outPath, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+		return "", 0, fmt.Errorf("write configs.txt: %v", err)
+	}
+	return outPath, len(lines), nil
+}
+
+func generatedConfigRemark(prefix, fallback string, index int) string {
+	base := strings.TrimSpace(prefix)
+	if base == "" {
+		base = strings.TrimSpace(fallback)
+	}
+	if base == "" {
+		base = "Moz"
+	}
+	return fmt.Sprintf("%s %d", base, index)
 }
 
 // ---------------------------------------------------------------------------
@@ -1661,6 +1983,13 @@ func minInt(a, b int) int {
 	return b
 }
 
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 func scanPulse(frame int) string {
 	frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 	return frames[frame%len(frames)]
@@ -1741,7 +2070,11 @@ func (m *AppModel) toggleFocusedConfigPort() {
 func (m AppModel) viewScanWithConfig() string {
 	var sb strings.Builder
 
-	sb.WriteString(styleTitle.Render("\n  ⚡  Find Working IPs\n"))
+	title := "Find Working IPs"
+	if m.configScanning || m.configDone {
+		title = "Phase 2 — Xray Validation"
+	}
+	sb.WriteString(styleTitle.Render("\n  " + title + "\n"))
 	sb.WriteString(fmt.Sprintf("%s\n\n", styleSep.Render("  "+strings.Repeat("─", minInt(m.width-4, 70)))))
 
 	if !m.configScanning && !m.configDone {
@@ -1863,7 +2196,7 @@ func (m AppModel) viewScanWithConfig() string {
 	if m.configTotal == 0 && m.configDone {
 		sb.WriteString(fmt.Sprintf("  %s  %s\n\n",
 			styleGood.Render("✓"),
-			styleBad.Render("No working candidates found"),
+			styleBad.Render("No Phase 1 candidates found"),
 		))
 		sb.WriteString(styleHint.Render("  esc back") + "\n")
 		return sb.String()
@@ -1871,8 +2204,8 @@ func (m AppModel) viewScanWithConfig() string {
 
 	done := len(m.configResults)
 	total := m.configTotal
-	success := m.configSuccessCount()
-	failed := m.configFailCount()
+	success, failed, skipped := validationOutcomeCounts(m.configResults)
+	successRate := validationSuccessRate(success, failed)
 
 	icon := m.spinner.View()
 	if m.configDone {
@@ -1890,24 +2223,42 @@ func (m AppModel) viewScanWithConfig() string {
 		styleDim.Render(strings.Repeat("░", bw-filled)) + "]" +
 		fmt.Sprintf(" %.0f%%", pct)
 
-	sb.WriteString(fmt.Sprintf("  %s  tested: %s  working: %s  failed: %s  %s\n\n",
+	skippedPart := ""
+	if skipped > 0 {
+		skippedPart = fmt.Sprintf("  skipped: %s", styleDim.Render(fmt.Sprintf("%d", skipped)))
+	}
+	sb.WriteString(fmt.Sprintf("  %s  tested: %s  working: %s  failed: %s%s  success: %s  %s\n",
 		icon,
 		styleAccent.Render(fmt.Sprintf("%d/%d", done, total)),
 		styleGood.Render(fmt.Sprintf("%d", success)),
 		styleBad.Render(fmt.Sprintf("%d", failed)),
+		skippedPart,
+		styleGood.Render(formatPercent(successRate)),
 		progBar,
 	))
+	if done > 0 {
+		elapsed := time.Since(m.scanStarted)
+		rate := float64(done) / elapsed.Seconds()
+		sb.WriteString(styleDim.Render(fmt.Sprintf("  elapsed: %s  rate: %s  eta: %s\n",
+			formatDurationShort(elapsed),
+			formatRate(rate),
+			formatETA(done, total, rate, m.configDone),
+		)))
+	}
+	sb.WriteRune('\n')
 	if !m.configDone {
 		sb.WriteString(fmt.Sprintf("  %s  xray validating candidates  %s\n\n",
 			styleAccent.Render(scanPulse(m.bannerFrame)),
 			scanWave(m.bannerFrame+5, 32),
 		))
+	} else if success > 0 {
+		sb.WriteString(styleGood.Render("  Ready: copy working endpoints or import generated configs from the V2Ray generator.\n\n"))
 	}
 
-	// Table header
-	hdr := fmt.Sprintf("  %-22s  %-8s  %8s  %8s  %6s",
-		"ENDPOINT", "TYPE", "SPEED", "LATENCY", "STATUS")
-	sb.WriteString(fmt.Sprintf("%s\n%s\n", styleHeader.Render(hdr), styleSep.Render("  "+strings.Repeat("─", 64))))
+	sb.WriteString(fmt.Sprintf("%s\n%s\n",
+		styleHeader.Render(validationHeader()),
+		styleSep.Render(tableSeparator(76)),
+	))
 
 	// Results
 	maxRows := m.height - 12
@@ -1922,55 +2273,119 @@ func (m AppModel) viewScanWithConfig() string {
 	for i := len(rows) - 1; i >= 0; i-- {
 		r := rows[i]
 		if r.Success {
-			line := fmt.Sprintf("  %-22s  %-8s  %8s  %8s  %6s",
-				formatEndpoint(r.IP, r.Port), r.Transport, formatValidationSpeed(r.Throughput), formatValidationLatency(r.Latency), "✓")
-			sb.WriteString(styleGood.Render(line) + "\n")
+			sb.WriteString(styleGood.Render(validationRow(r, "working")) + "\n")
+		} else if isSkippedValidation(r) {
+			sb.WriteString(styleDim.Render(validationRow(r, "skipped")) + "\n")
 		} else {
 			errMsg := r.Error
-			if len(errMsg) > 20 {
-				errMsg = errMsg[:20] + "…"
+			if errMsg == "" {
+				errMsg = "failed"
 			}
-			line := fmt.Sprintf("  %-22s  %-8s  %9s  %8s  %6s",
-				formatEndpoint(r.IP, r.Port), r.Transport, "—", "—", "✗")
-			sb.WriteString(styleBad.Render(line) + "\n")
+			if len(errMsg) > statusColWidth {
+				errMsg = errMsg[:statusColWidth-1] + "…"
+			}
+			sb.WriteString(styleBad.Render(validationRow(r, errMsg)) + "\n")
 		}
 	}
 
 	sb.WriteRune('\n')
+	if latest := latestConfigFailure(m.configResults); latest != "" {
+		sb.WriteString(styleDim.Render("  latest failure: "+truncateMiddle(latest, minInt(maxInt(m.width-22, 30), 110))) + "\n")
+	}
 	if m.statusMsg != "" {
 		sb.WriteString(styleGood.Render("  "+m.statusMsg) + "\n")
 	}
 	if m.configDone {
-		hint := "  c copy working endpoints   q/esc back to menu"
+		hint := "  c copy working endpoints   q/esc back"
 		if m.liveResultPath != "" {
-			hint += "\n" + styleDim.Render("  live results → "+m.liveResultPath)
+			path := truncateMiddle(m.liveResultPath, minInt(maxInt(m.width-20, 30), 90))
+			hint += "\n" + styleDim.Render("  live results: "+path)
 		}
 		sb.WriteString(styleHint.Render(hint) + "\n")
 	} else if m.liveResultPath != "" {
-		sb.WriteString(styleDim.Render("  live results → "+m.liveResultPath) + "\n")
+		path := truncateMiddle(m.liveResultPath, minInt(maxInt(m.width-20, 30), 90))
+		sb.WriteString(styleDim.Render("  live results: "+path) + "\n")
 	}
 
 	return sb.String()
 }
 
 func (m AppModel) configSuccessCount() int {
-	count := 0
-	for _, r := range m.configResults {
-		if r.Success {
-			count++
+	success, _, _ := validationOutcomeCounts(m.configResults)
+	return success
+}
+
+func latestConfigFailure(results []*xraytest.ValidationResult) string {
+	for i := len(results) - 1; i >= 0; i-- {
+		if results[i] != nil && !results[i].Success && results[i].Error != "" && !isSkippedValidation(results[i]) {
+			return results[i].Error
 		}
 	}
-	return count
+	return ""
 }
 
 func (m AppModel) configFailCount() int {
-	count := 0
-	for _, r := range m.configResults {
-		if !r.Success {
-			count++
+	_, failed, _ := validationOutcomeCounts(m.configResults)
+	return failed
+}
+
+func validationOutcomeCounts(results []*xraytest.ValidationResult) (success, failed, skipped int) {
+	for _, r := range results {
+		if r == nil {
+			continue
+		}
+		if r.Success {
+			success++
+		} else if isSkippedValidation(r) {
+			skipped++
+		} else {
+			failed++
 		}
 	}
-	return count
+	return success, failed, skipped
+}
+
+func validationSuccessRate(success, failed int) float64 {
+	total := success + failed
+	if total == 0 {
+		return 0
+	}
+	return float64(success) / float64(total) * 100
+}
+
+func isSkippedValidation(r *xraytest.ValidationResult) bool {
+	return r != nil && strings.HasPrefix(strings.ToLower(r.Error), "skipped:")
+}
+
+func formatPercent(v float64) string {
+	if v <= 0 {
+		return "0%"
+	}
+	return fmt.Sprintf("%.1f%%", v)
+}
+
+func formatRate(v float64) string {
+	if v <= 0 || v > 1000000 {
+		return "-"
+	}
+	if v >= 10 {
+		return fmt.Sprintf("%.0f/s", v)
+	}
+	return fmt.Sprintf("%.1f/s", v)
+}
+
+func formatETA(done, total int, rate float64, finished bool) string {
+	if finished || done >= total {
+		return "done"
+	}
+	if rate <= 0 || total <= 0 || done <= 0 {
+		return "-"
+	}
+	remaining := float64(total-done) / rate
+	if remaining < 0 {
+		return "done"
+	}
+	return formatDurationShort(time.Duration(remaining) * time.Second)
 }
 
 func (m AppModel) handleScanWithConfigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -2171,9 +2586,13 @@ func (m AppModel) viewConfigOptional() string {
 
 	rowLabel(0, "  Config ")
 	sb.WriteString(" " + m.configInput.View() + "\n")
-	sb.WriteString(styleDim.Render("            optional — leave empty for Phase 1 only") + "\n\n")
+	if summary := parsedConfigSummary(m.configInput.Value()); summary != "" {
+		sb.WriteString(styleDim.Render("            "+summary) + "\n\n")
+	} else {
+		sb.WriteString(styleDim.Render("            optional — leave empty for Phase 1 only") + "\n\n")
+	}
 
-	rowLabel(1, "  Top N  ")
+	rowLabel(1, "  Test N ")
 	sb.WriteString(" ")
 	renderPills(configTopNLabels, m.configTopNIdx)
 	sb.WriteString("\n")
@@ -2185,9 +2604,17 @@ func (m AppModel) viewConfigOptional() string {
 		sb.WriteString(styleDim.Render("            Phase 2 picks — used only when a config URL is entered") + "\n\n")
 	}
 
-	hint := "  ↑/↓ row   ←/→ option   enter start scan   esc back"
+	rowLabel(2, "  Start  ")
+	mode := "Phase 1 only"
+	if strings.TrimSpace(m.configInput.Value()) != "" {
+		mode = "Phase 1 + xray validation"
+	}
+	sb.WriteString(" " + styleNormal.Render(mode) + "\n")
+	sb.WriteString(styleDim.Render("            press Enter here to start") + "\n\n")
+
+	hint := "  ↑/↓ row   ←/→ option   enter select   esc back"
 	if m.configOptionalRow == 0 {
-		hint = "  paste URL or leave empty   enter start   ↓ navigate   esc back"
+		hint = "  paste URL or leave empty   ↓ continue   esc back"
 	}
 	if m.configCustomMode {
 		hint = "  type value   enter confirm   esc cancel"
@@ -2203,6 +2630,13 @@ func (m AppModel) viewConfigOptional() string {
 }
 
 func (m AppModel) handleConfigOptionalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.configOptionalRow == 0 && msg.Type == tea.KeyRunes && msg.Paste {
+		m.configInput.SetValue(cleanPastedConfigURL(string(msg.Runes)))
+		m.configInput.CursorEnd()
+		m.statusMsg = "config pasted — press Enter to continue"
+		return m, nil
+	}
+
 	if m.configCustomMode {
 		switch msg.String() {
 		case "enter":
@@ -2222,6 +2656,27 @@ func (m AppModel) handleConfigOptionalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	if m.configOptionalRow == 0 {
+		m.configInput.Focus()
+		switch msg.String() {
+		case "esc":
+			m.page = PageScanWithConfig
+			m.configInput.Blur()
+			return m, nil
+		case "down":
+			m.configOptionalRow = 1
+			m.configInput.Blur()
+			return m, nil
+		case "enter":
+			m.configOptionalRow = 1
+			m.configInput.Blur()
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.configInput, cmd = m.configInput.Update(msg)
+		return m, cmd
+	}
+
 	switch msg.String() {
 	case "esc":
 		m.page = PageScanWithConfig
@@ -2238,8 +2693,8 @@ func (m AppModel) handleConfigOptionalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "down", "j":
-		if m.configOptionalRow == 0 {
-			m.configOptionalRow = 1
+		if m.configOptionalRow < 2 {
+			m.configOptionalRow++
 			m.configInput.Blur()
 			return m, nil
 		}
@@ -2259,15 +2714,7 @@ func (m AppModel) handleConfigOptionalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	case "enter":
-		if m.configOptionalRow == 0 {
-			if strings.TrimSpace(m.configInput.Value()) == "" {
-				return m.launchPhase1FromOptional()
-			}
-			m.configOptionalRow = 1
-			m.configInput.Blur()
-			return m, nil
-		}
-		if m.isTopNCustomSelected() {
+		if m.configOptionalRow == 1 && m.isTopNCustomSelected() {
 			m.configCustomMode = true
 			m.configCustomRow = 5
 			m.configCustomInput.SetValue(m.configTopNCustom)
@@ -2275,15 +2722,47 @@ func (m AppModel) handleConfigOptionalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.configCustomInput.Focus()
 			return m, textinput.Blink
 		}
+		if m.configOptionalRow == 1 {
+			m.configOptionalRow = 2
+			return m, nil
+		}
 		return m.launchPhase1FromOptional()
 	}
 
-	if m.configOptionalRow == 0 {
-		var cmd tea.Cmd
-		m.configInput, cmd = m.configInput.Update(msg)
-		return m, cmd
-	}
 	return m, nil
+}
+
+func cleanPastedConfigURL(raw string) string {
+	raw = strings.TrimSpace(strings.ReplaceAll(raw, "\r\n", "\n"))
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			return line
+		}
+	}
+	return ""
+}
+
+func parsedConfigSummary(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	cfg, err := xraytest.ParseProxyURL(raw)
+	if err != nil {
+		return "invalid URL: " + truncateMiddle(err.Error(), 68)
+	}
+	host := cfg.Host
+	if host == "" {
+		host = cfg.SNI
+	}
+	enc := cfg.Encryption
+	if enc == "" {
+		enc = "none"
+	}
+	enc = truncateMiddle(enc, 34)
+	return fmt.Sprintf("parsed: %s  %s  host=%s  port=%d  encryption=%s",
+		cfg.Protocol, cfg.Network, host, cfg.Port, enc)
 }
 
 func (m AppModel) isTopNCustomSelected() bool {
@@ -2318,6 +2797,7 @@ func (m AppModel) launchPhase1FromOptional() (AppModel, tea.Cmd) {
 	m.configPhase1Done = false
 	m.configPhase1Stats = StatsMsg{}
 	m.page = PageConfigPhase1
+	m.scanStarted = time.Now()
 
 	count := configCountValues[m.configCountIdx]
 	if count == 0 {
@@ -2462,7 +2942,7 @@ func (m AppModel) viewConfigSetup() string {
 	sb.WriteString(fmt.Sprintf("%s\n\n", styleSep.Render("  "+strings.Repeat("─", minInt(m.width-4, 70)))))
 
 	sb.WriteString(styleNormal.Render("  Phase 1: Fast connectivity scan to find reachable IPs") + "\n")
-	sb.WriteString(styleNormal.Render("  Phase 2: Test top IPs with your actual xray config") + "\n\n")
+	sb.WriteString(styleNormal.Render("  Phase 2: Test a spread of candidates with your actual xray config") + "\n\n")
 
 	// Count row
 	countLabel := "  Count   "
@@ -2483,8 +2963,8 @@ func (m AppModel) viewConfigSetup() string {
 		sb.WriteString(styleDim.Render(countLabel+"IPs to probe in Phase 1") + "\n\n")
 	}
 
-	// Top N row
-	topLabel := "  Top N   "
+	// Phase 2 sample size row
+	topLabel := "  Test N  "
 	for i, label := range configTopNLabels {
 		if i == m.configTopNIdx && m.configSetupRow == 1 {
 			sb.WriteString(styleSelected.Render(" " + label + " "))
@@ -2497,9 +2977,9 @@ func (m AppModel) viewConfigSetup() string {
 	}
 	sb.WriteString("\n")
 	if m.configSetupRow == 1 {
-		sb.WriteString(styleAccent.Render(topLabel) + styleDim.Render("best IPs to validate with xray") + "\n\n")
+		sb.WriteString(styleAccent.Render(topLabel) + styleDim.Render("candidates to validate, spread across latency and ranges") + "\n\n")
 	} else {
-		sb.WriteString(styleDim.Render(topLabel+"best IPs to validate with xray") + "\n\n")
+		sb.WriteString(styleDim.Render(topLabel+"candidates to validate, spread across latency and ranges") + "\n\n")
 	}
 
 	sb.WriteString(styleHint.Render("  ↑/↓ row   ←/→ option   enter start   esc back") + "\n")
@@ -2569,7 +3049,9 @@ type ConfigPhase1DoneMsg struct{}
 func (m AppModel) viewConfigPhase1() string {
 	var sb strings.Builder
 
-	sb.WriteString(styleTitle.Render("\n  ⚡  Phase 1 — Finding reachable IPs\n"))
+	withConfig := strings.TrimSpace(m.configURL) != ""
+
+	sb.WriteString(styleTitle.Render("\n  Phase 1 — Candidate Scan\n"))
 	sb.WriteString(fmt.Sprintf("%s\n\n", styleSep.Render("  "+strings.Repeat("─", minInt(m.width-4, 70)))))
 
 	icon := m.spinner.View()
@@ -2584,18 +3066,51 @@ func (m AppModel) viewConfigPhase1() string {
 		}
 	}
 
+	tested := len(m.configPhase1Results)
 	targetStr := fmt.Sprintf("%d", m.configPhase1Total)
-	sb.WriteString(fmt.Sprintf("  %s  tested: %s  candidates: %s  target: %s\n\n",
+	countLabel := "candidates"
+	if !withConfig {
+		countLabel = "healthy"
+	}
+	source := "Random Cloudflare"
+	if m.configIPMode == 1 {
+		source = "ips.txt"
+	}
+	probe := "HTTP"
+	if withConfig {
+		probe = "config-aware"
+	}
+	rate := 0.0
+	if tested > 0 {
+		rate = float64(healthy) / float64(tested) * 100
+	}
+	sb.WriteString(fmt.Sprintf("  %s  source: %s  probe: %s  ports: %s\n",
 		icon,
-		styleAccent.Render(fmt.Sprintf("%d", len(m.configPhase1Results))),
+		styleNormal.Render(source),
+		styleNormal.Render(probe),
+		styleDim.Render(formatPorts(m.resolveConfigPorts())),
+	))
+	sb.WriteString(fmt.Sprintf("     tested: %s  %s: %s  target: %s  hit-rate: %s\n",
+		styleAccent.Render(fmt.Sprintf("%d", tested)),
+		countLabel,
 		styleGood.Render(fmt.Sprintf("%d", healthy)),
 		styleDim.Render(targetStr),
+		styleGood.Render(formatPercent(rate)),
 	))
+	if tested > 0 {
+		elapsed := time.Since(m.scanStarted)
+		scanRate := float64(tested) / elapsed.Seconds()
+		sb.WriteString(styleDim.Render(fmt.Sprintf("     elapsed: %s  rate: %s  eta: %s\n",
+			formatDurationShort(elapsed),
+			formatRate(scanRate),
+			formatETA(tested, m.configPhase1Total, scanRate, m.configPhase1Done),
+		)))
+	}
+	sb.WriteRune('\n')
 	if !m.configPhase1Done {
-		sb.WriteString(fmt.Sprintf("  %s  %s  ports: %s\n\n",
+		sb.WriteString(fmt.Sprintf("  %s  discovering reachable candidates  %s\n\n",
 			styleAccent.Render(scanPulse(m.bannerFrame)),
 			scanWave(m.bannerFrame, 28),
-			styleDim.Render(formatPorts(m.resolveConfigPorts())),
 		))
 	}
 
@@ -2608,49 +3123,59 @@ func (m AppModel) viewConfigPhase1() string {
 			if topN == 0 {
 				label = "all"
 			}
-			sb.WriteString(styleGood.Render(fmt.Sprintf("  Found %d candidates. Testing top %s with xray...\n\n", healthy, label)))
+			sb.WriteString(styleGood.Render(fmt.Sprintf("  Found %d candidates. Testing %s spread candidates with xray...\n", healthy, label)))
+			sb.WriteString(styleDim.Render("  Phase 1 is a reachability filter; Phase 2 samples latency bands and IP ranges.\n\n"))
 		}
 	} else if m.configIPMode == 1 {
 		sb.WriteString(styleNormal.Render("  Probing IPs from ips.txt on the selected ports...\n\n"))
-	} else if strings.TrimSpace(m.configURL) == "" {
+	} else if !withConfig {
 		sb.WriteString(styleNormal.Render("  Scanning random Cloudflare IPv4 IPs (standard HTTP probe)...\n"))
 		sb.WriteString(styleDim.Render("  healthy hits also explore nearby addresses in the same Cloudflare block\n\n"))
 	} else {
-		sb.WriteString(styleNormal.Render("  Scanning Cloudflare IPs using your config probe settings...\n"))
-		sb.WriteString(styleDim.Render("  healthy hits also explore nearby addresses in the same Cloudflare block\n\n"))
+		sb.WriteString(styleNormal.Render("  Scanning Cloudflare IPs using your config reachability probe...\n"))
+		sb.WriteString(styleDim.Render("  these are candidates, not confirmed working endpoints until xray validation\n\n"))
 	}
 
 	if m.liveResultPath != "" {
-		sb.WriteString(styleDim.Render("  live results → " + m.liveResultPath + "\n\n"))
+		path := truncateMiddle(m.liveResultPath, minInt(maxInt(m.width-20, 30), 90))
+		sb.WriteString(styleDim.Render("  live results: "+path) + "\n\n")
 	}
 
 	if len(m.configPhase1Results) > 0 {
-		hdr := fmt.Sprintf("  %-22s  %7s  %9s  %8s  %6s",
-			"ENDPOINT", "LOSS", "AVG(ms)", "COLO", "STATUS")
-		sb.WriteString(fmt.Sprintf("%s\n%s\n", styleHeader.Render(hdr), styleSep.Render("  "+strings.Repeat("─", 64))))
+		statusLabel := "STATUS"
+		if withConfig {
+			statusLabel = "PHASE 1"
+		}
+		sb.WriteString(styleDim.Render("  Best live candidates\n"))
+		sb.WriteString(fmt.Sprintf("%s\n%s\n",
+			styleHeader.Render(endpointHeader(statusLabel)),
+			styleSep.Render(tableSeparator(76)),
+		))
 
 		top := result.TopN(m.configPhase1Results, 20)
 		for _, r := range top {
-			colo := r.Colo
-			if colo == "" {
-				colo = "—"
+			status := "healthy"
+			if withConfig {
+				status = "candidate"
 			}
-			status := "✓"
 			lineStyle := styleGood
 			if !r.IsHealthy() {
-				status = "✗"
+				status = "failed"
 				lineStyle = styleBad
 			}
-			line := fmt.Sprintf("  %-22s  %6.1f%%  %9.2f  %-8s  %6s",
-				formatEndpoint(r.IP.String(), r.Port), r.Loss(),
-				float64(r.Avg().Milliseconds()), colo, status)
-			sb.WriteString(lineStyle.Render(line) + "\n")
+			sb.WriteString(lineStyle.Render(endpointCandidateRow(r, status)) + "\n")
 		}
 		sb.WriteRune('\n')
 	}
 
+	if m.statusMsg != "" {
+		sb.WriteString(styleGood.Render("  "+m.statusMsg) + "\n")
+	}
+
 	if m.configPhase1Done && m.configPhase1Only {
 		sb.WriteString(styleHint.Render("  c copy healthy endpoints   q/esc back") + "\n")
+	} else if healthy > 0 {
+		sb.WriteString(styleHint.Render("  c copy best candidate   q/esc cancel") + "\n")
 	} else {
 		sb.WriteString(styleHint.Render("  q/esc cancel") + "\n")
 	}
@@ -2664,6 +3189,8 @@ func (m AppModel) handleConfigPhase1Key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.statusMsg = m.copyPhase1HealthyEndpoints()
 			return m, nil
 		}
+		m.statusMsg = m.copyBestPhase1Candidate()
+		return m, nil
 	case "esc", "q":
 		if scanCancel != nil {
 			scanCancel()
@@ -2673,6 +3200,18 @@ func (m AppModel) handleConfigPhase1Key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+func (m AppModel) copyBestPhase1Candidate() string {
+	top := result.TopN(m.configPhase1Results, 1)
+	if len(top) == 0 {
+		return "no candidate to copy yet"
+	}
+	endpoint := formatEndpoint(top[0].IP.String(), top[0].Port)
+	if err := clipboardWriteAll(endpoint); err != nil {
+		return fmt.Sprintf("clipboard error: %v", err)
+	}
+	return "copied " + endpoint
 }
 
 func (m AppModel) copyPhase1HealthyEndpoints() string {
@@ -2787,8 +3326,124 @@ func (m AppModel) resolveConfigPorts() []int {
 
 // runConfigPhase1 is defined in cmds.go and accepts a configPhase1Options struct.
 
+// selectPhase2Candidates keeps Phase 2 from over-trusting Phase 1 latency.
+// Some routes prefer IPs that are merely reachable, not the lowest ping, so we
+// sample across latency quantiles and avoid repeating the same IP range first.
+func selectPhase2Candidates(results []*result.Result, n int) []*result.Result {
+	healthy := result.TopN(results, 0)
+	limit := n
+	if limit <= 0 || limit > len(healthy) {
+		limit = len(healthy)
+	}
+	if limit == 0 {
+		return nil
+	}
+
+	const bucketCount = 5
+	buckets := make([][]*result.Result, bucketCount)
+	for i, r := range healthy {
+		bucket := i * bucketCount / len(healthy)
+		if bucket >= bucketCount {
+			bucket = bucketCount - 1
+		}
+		buckets[bucket] = append(buckets[bucket], r)
+	}
+
+	selected := make([]*result.Result, 0, limit)
+	seen := make(map[*result.Result]struct{})
+	usedRanges := make(map[string]struct{})
+
+	add := func(r *result.Result, allowRangeRepeat bool) bool {
+		if r == nil {
+			return false
+		}
+		if _, ok := seen[r]; ok {
+			return false
+		}
+		key := phase2RangeKey(r.IP)
+		if !allowRangeRepeat && key != "" {
+			if _, ok := usedRanges[key]; ok {
+				return false
+			}
+		}
+		seen[r] = struct{}{}
+		if key != "" {
+			usedRanges[key] = struct{}{}
+		}
+		selected = append(selected, r)
+		return true
+	}
+
+	pickFromBucket := func(bucket []*result.Result, allowRangeRepeat bool) bool {
+		for _, r := range bucket {
+			if add(r, allowRangeRepeat) {
+				return true
+			}
+		}
+		return false
+	}
+
+	for _, allowRangeRepeat := range []bool{false, true} {
+		for len(selected) < limit {
+			progress := false
+			for _, bucket := range buckets {
+				if len(selected) >= limit {
+					break
+				}
+				if pickFromBucket(bucket, allowRangeRepeat) {
+					progress = true
+				}
+			}
+			if !progress {
+				break
+			}
+		}
+	}
+
+	return selected
+}
+
+func phase2RangeKey(ip net.IP) string {
+	if ip4 := ip.To4(); ip4 != nil {
+		return fmt.Sprintf("%d.%d", ip4[0], ip4[1])
+	}
+	ip16 := ip.To16()
+	if ip16 == nil {
+		return ""
+	}
+	return fmt.Sprintf("%x:%x", ip16[0:2], ip16[2:4])
+}
+
+const (
+	phase2ValidationTimeout      = 7 * time.Second
+	phase2DeadRangeFailThreshold = 12
+)
+
+type phase2RangeProgress struct {
+	tested  int
+	failed  int
+	success int
+}
+
+func phase2WorkerCount(total int) int {
+	switch {
+	case total <= 0:
+		return 0
+	case total >= 100:
+		return 16
+	case total >= 30:
+		return 12
+	default:
+		return minInt(8, total)
+	}
+}
+
+func phase2RangePruningEnabled(total int) bool {
+	return total >= 100
+}
+
 // ---------------------------------------------------------------------------
-// Config Phase 2 — xray validation of top IPs
+// Config Phase 2 — xray validation of selected candidates
 // ---------------------------------------------------------------------------
 
 func (m AppModel) startConfigPhase2(topIPs []*result.Result) tea.Cmd {
@@ -2808,23 +3463,114 @@ func runConfigPhase2(rawURL string, topIPs []*result.Result) {
 		return
 	}
 
-	ctx := context.Background()
-	total := len(topIPs)
+	ctx, cancel := context.WithCancel(context.Background())
+	scanCancel = cancel
+	defer cancel()
 
-	for i, r := range topIPs {
-		ip := r.IP.String()
-		swapped := cfg.WithEndpoint(ip, r.Port)
-		vr := xraytest.ValidateConfig(ctx, swapped, 20*time.Second)
+	total := len(topIPs)
+	workers := phase2WorkerCount(total)
+	if workers <= 0 {
+		if prog != nil {
+			prog.Send(ConfigDoneMsg{})
+		}
+		return
+	}
+
+	jobs := make(chan *result.Result)
+	var done atomic.Int64
+	var wg sync.WaitGroup
+	var rangeMu sync.Mutex
+	rangeStats := make(map[string]phase2RangeProgress)
+
+	recordRangeResult := func(ip net.IP, success bool) {
+		if !phase2RangePruningEnabled(total) {
+			return
+		}
+		key := phase2RangeKey(ip)
+		if key == "" {
+			return
+		}
+		rangeMu.Lock()
+		st := rangeStats[key]
+		st.tested++
+		if success {
+			st.success++
+		} else {
+			st.failed++
+		}
+		rangeStats[key] = st
+		rangeMu.Unlock()
+	}
+
+	shouldSkipRange := func(ip net.IP) bool {
+		if !phase2RangePruningEnabled(total) {
+			return false
+		}
+		key := phase2RangeKey(ip)
+		if key == "" {
+			return false
+		}
+		rangeMu.Lock()
+		st := rangeStats[key]
+		rangeMu.Unlock()
+		return st.success == 0 && st.failed >= phase2DeadRangeFailThreshold
+	}
+
+	sendProgress := func(vr *xraytest.ValidationResult) {
+		current := int(done.Add(1))
 		if liveResultWriter != nil {
 			liveResultWriter.AddPhase2(vr)
 		}
 		if prog != nil {
 			prog.Send(ConfigProgressMsg{
 				Result: vr,
-				Done:   i + 1,
+				Done:   current,
 				Total:  total,
 			})
 		}
+	}
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for r := range jobs {
+				if r == nil || ctx.Err() != nil {
+					continue
+				}
+				ip := r.IP.String()
+				swapped := cfg.WithEndpoint(ip, r.Port)
+				vr := xraytest.ValidateConfig(ctx, swapped, phase2ValidationTimeout)
+				recordRangeResult(r.IP, vr.Success)
+				sendProgress(vr)
+			}
+		}()
+	}
+
+enqueue:
+	for _, r := range topIPs {
+		if ctx.Err() != nil {
+			break
+		}
+		if shouldSkipRange(r.IP) {
+			sendProgress(&xraytest.ValidationResult{
+				IP:        r.IP.String(),
+				Port:      r.Port,
+				Transport: cfg.Network,
+				Error:     "skipped: range failed repeatedly",
+			})
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			break enqueue
+		case jobs <- r:
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	if liveResultWriter != nil {
+		_ = liveResultWriter.flush()
 	}
 
 	if prog != nil {

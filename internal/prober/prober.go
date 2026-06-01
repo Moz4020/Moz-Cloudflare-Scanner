@@ -36,6 +36,7 @@ type Config struct {
 	WebSocketHost      string // empty = SNI
 	WebSocketPath      string // empty = /
 	RequireWebSocket   bool   // require a successful WebSocket probe for HTTP health
+	AcceptCFHTTPError  bool   // accept any Cloudflare HTTP response when xray will validate next
 }
 
 // WithPort returns a copy of Config targeting another remote port.
@@ -87,6 +88,7 @@ func Probe(ctx context.Context, ip net.IP, cfg Config) *result.Result {
 		Timestamp: time.Now(),
 		Latencies: make([]time.Duration, cfg.Tries),
 		RequireWS: cfg.RequireWebSocket,
+		AcceptCF:  cfg.AcceptCFHTTPError,
 	}
 	if cfg.Mode == ModeHTTP && cfg.SpeedBytes > 0 {
 		r.SpeedTested = true
@@ -214,6 +216,7 @@ func probeHTTP(ctx context.Context, ip net.IP, port int, sni string, timeout tim
 			InsecureSkipVerify: insecure,
 		},
 		DisableKeepAlives:   true,
+		ForceAttemptHTTP2:   true,
 		TLSHandshakeTimeout: timeout / 2,
 	}
 
@@ -370,6 +373,7 @@ func probeDownload(ctx context.Context, ip net.IP, port int, timeout time.Durati
 			MinVersion: tls.VersionTLS12,
 		},
 		DisableKeepAlives:   true,
+		ForceAttemptHTTP2:   true,
 		TLSHandshakeTimeout: timeout / 2,
 	}
 	client := &http.Client{Timeout: timeout, Transport: transport}

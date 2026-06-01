@@ -119,6 +119,57 @@ func TestBuildXrayConfig_GRPC(t *testing.T) {
 	}
 }
 
+func TestBuildXrayConfig_XHTTPExtra(t *testing.T) {
+	cfg := &VLESSConfig{
+		UUID:        "abcdef12-3456-7890-abcd-ef1234567890",
+		Address:     "104.17.122.146",
+		Port:        443,
+		Encryption:  "mlkem768x25519plus.native.0rtt.test",
+		Network:     "xhttp",
+		Path:        "/mozzywozzy",
+		Host:        "insane.mozsub.ir",
+		Mode:        "auto",
+		Security:    "tls",
+		SNI:         "insane.mozsub.ir",
+		Fingerprint: "chrome",
+		ALPN:        []string{"h2", "http/1.1"},
+		XHTTPExtra: map[string]interface{}{
+			"scMaxEachPostBytes":   "1000000",
+			"scMinPostsIntervalMs": "30",
+			"xPaddingBytes":        "100-1000",
+		},
+	}
+
+	configBytes, err := BuildXrayConfig(cfg, 10812)
+	if err != nil {
+		t.Fatalf("BuildXrayConfig failed: %v", err)
+	}
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(configBytes, &parsed); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+
+	outbounds := parsed["outbounds"].([]interface{})
+	proxy := outbounds[0].(map[string]interface{})
+	stream := proxy["streamSettings"].(map[string]interface{})
+	xhttpSettings := stream["xhttpSettings"].(map[string]interface{})
+	extra := xhttpSettings["extra"].(map[string]interface{})
+
+	if xhttpSettings["host"].(string) != "insane.mozsub.ir" {
+		t.Errorf("host: got %v, want insane.mozsub.ir", xhttpSettings["host"])
+	}
+	if extra["scMaxEachPostBytes"].(string) != "1000000" {
+		t.Errorf("extra.scMaxEachPostBytes: got %v, want 1000000", extra["scMaxEachPostBytes"])
+	}
+	if extra["scMinPostsIntervalMs"].(string) != "30" {
+		t.Errorf("extra.scMinPostsIntervalMs: got %v, want 30", extra["scMinPostsIntervalMs"])
+	}
+	if extra["xPaddingBytes"].(string) != "100-1000" {
+		t.Errorf("extra.xPaddingBytes: got %v, want 100-1000", extra["xPaddingBytes"])
+	}
+}
+
 func TestBuildXrayConfig_AddressSwap(t *testing.T) {
 	raw := "vless://12345678-1234-1234-1234-123456789abc@example.com:443?encryption=none&security=tls&sni=example.com&type=ws&path=%2Fdownload&host=example.com#test"
 
