@@ -165,10 +165,10 @@ var quickTimeoutPresets = []quickPreset{
 }
 
 var phase2WorkersPresets = []quickPreset{
-	{"Safe 20", "20"},
-	{"Balanced 50", "50"},
-	{"Fast 100", "100"},
-	{"Max 200", "200"},
+	{"Safe 10", "10"},
+	{"Balanced 30", "30"},
+	{"Fast 60", "60"},
+	{"Max 100", "100"},
 	{"Custom", ""},
 }
 
@@ -233,6 +233,7 @@ type AppModel struct {
 	scanStats    StatsMsg
 	scanDone     bool
 	scanStarted  time.Time
+	scanDuration time.Duration
 	scanTotal    int
 
 	// colos
@@ -465,12 +466,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case DoneMsg:
 		if msg.ScanID == m.activeScanID {
 			m.scanDone = true
+			m.scanDuration = time.Since(m.scanStarted)
 		}
 		return m, nil
 
 	case ColosDoneMsg:
 		if msg.ScanID == m.activeScanID {
 			m.colosDone = true
+			m.scanDuration = time.Since(m.scanStarted)
 		}
 		return m, nil
 
@@ -482,6 +485,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ConfigDoneMsg:
 		m.configScanning = false
 		m.configDone = true
+		m.scanDuration = time.Since(m.scanStarted)
 		return m, nil
 
 	case ConfigPhase1ResultMsg:
@@ -499,6 +503,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.configPhase1Done = true
 		if strings.TrimSpace(m.configURL) == "" {
 			m.configPhase1Only = true
+			m.scanDuration = time.Since(m.scanStarted)
 			if liveResultWriter != nil {
 				liveResultWriter.FinishPhase1Only()
 			}
@@ -1294,7 +1299,7 @@ func (m AppModel) viewHome() string {
 	}
 	sb.WriteString(styleDim.Render("  simple Cloudflare endpoint toolkit"))
 	sb.WriteString("\n")
-	sb.WriteString(styleAccent.Render("  0.1.0 Beta"))
+	sb.WriteString(styleAccent.Render("  " + m.version))
 	sb.WriteString("\n\n")
 
 	// Menu
@@ -1691,6 +1696,9 @@ func (m AppModel) viewLiveScan() string {
 
 	// Stats row
 	elapsed := time.Since(m.scanStarted).Round(time.Second)
+	if m.scanDone && m.scanDuration > 0 {
+		elapsed = m.scanDuration.Round(time.Second)
+	}
 	rateStr := "—"
 	if elapsed.Seconds() > 0 && m.scanStats.Tested > 0 {
 		rateStr = fmt.Sprintf("%.0f/s", float64(m.scanStats.Tested)/elapsed.Seconds())
@@ -2269,6 +2277,9 @@ func (m AppModel) viewScanWithConfig() string {
 	))
 	if done > 0 {
 		elapsed := time.Since(m.scanStarted)
+		if m.configDone && m.scanDuration > 0 {
+			elapsed = m.scanDuration
+		}
 		rate := float64(done) / elapsed.Seconds()
 		sb.WriteString(styleDim.Render(fmt.Sprintf("  elapsed: %s  rate: %s  eta: %s\n",
 			formatDurationShort(elapsed),
@@ -2954,8 +2965,8 @@ func runConfigScan(rawURL string) {
 // Config Setup presets
 // ---------------------------------------------------------------------------
 
-var configCountValues = []int{1000, 5000, 20000, 0} // 0 = custom
-var configCountLabels = []string{"Quick 1k", "Normal 5k", "Balanced 20k", "Custom"}
+var configCountValues = []int{1000, 5000, 20000, 50000, 0} // 0 = custom
+var configCountLabels = []string{"Quick 1k", "Normal 5k", "Balanced 20k", "Deep 50k", "Custom"}
 var configTopNValues = []int{10, 25, 50, 100, 0} // 0 = all
 var configTopNLabels = []string{"10", "25", "50", "100", "All", "Custom"}
 var configIPModeLabels = []string{"Random IPs", "ips.txt"}
@@ -3166,6 +3177,9 @@ func (m AppModel) viewConfigPhase1() string {
 	))
 	if tested > 0 {
 		elapsed := time.Since(m.scanStarted)
+		if m.configPhase1Done && m.scanDuration > 0 {
+			elapsed = m.scanDuration
+		}
 		scanRate := float64(tested) / elapsed.Seconds()
 		sb.WriteString(styleDim.Render(fmt.Sprintf("     elapsed %s   rate %s   eta %s\n",
 			formatDurationShort(elapsed),

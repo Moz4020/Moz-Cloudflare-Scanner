@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"log"
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -11,6 +13,10 @@ import (
 )
 
 func main() {
+	// Discard standard library logger output to avoid rogue HTTP/2 connection warnings
+	// (e.g. "http2: server sent DATA after END_STREAM") from corrupting the Bubble Tea TUI.
+	log.SetOutput(io.Discard)
+
 	// --version flag without launching TUI
 	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-v" || os.Args[1] == "version") {
 		fmt.Println("Moz Cloudflare Scanner", version.String())
