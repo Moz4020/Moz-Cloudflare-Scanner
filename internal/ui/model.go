@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1010,12 +1011,32 @@ func workingIPs(results []*xraytest.ValidationResult) []string {
 }
 
 func workingEndpoints(results []*xraytest.ValidationResult) []string {
-	var endpoints []string
-	seen := make(map[string]struct{})
+	working := make([]*xraytest.ValidationResult, 0, len(results))
 	for _, r := range results {
 		if r == nil || !r.Success || r.IP == "" {
 			continue
 		}
+		working = append(working, r)
+	}
+
+	sort.SliceStable(working, func(i, j int) bool {
+		a, b := working[i], working[j]
+		aLatency := validationLatencyRank(a.Latency)
+		bLatency := validationLatencyRank(b.Latency)
+		if aLatency != bLatency {
+			return aLatency < bLatency
+		}
+		if a.Throughput != b.Throughput {
+			return a.Throughput > b.Throughput
+		}
+		aEndpoint := formatEndpoint(a.IP, a.Port)
+		bEndpoint := formatEndpoint(b.IP, b.Port)
+		return aEndpoint < bEndpoint
+	})
+
+	endpoints := make([]string, 0, len(working))
+	seen := make(map[string]struct{})
+	for _, r := range working {
 		endpoint := formatEndpoint(r.IP, r.Port)
 		if _, ok := seen[endpoint]; ok {
 			continue
@@ -1024,6 +1045,13 @@ func workingEndpoints(results []*xraytest.ValidationResult) []string {
 		endpoints = append(endpoints, endpoint)
 	}
 	return endpoints
+}
+
+func validationLatencyRank(latency time.Duration) time.Duration {
+	if latency <= 0 {
+		return time.Duration(1<<63 - 1)
+	}
+	return latency
 }
 
 func formatEndpoint(ip string, port int) string {

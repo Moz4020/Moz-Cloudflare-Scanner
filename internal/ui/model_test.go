@@ -177,6 +177,36 @@ func TestWorkingEndpointsIncludePorts(t *testing.T) {
 	}
 }
 
+func TestWorkingEndpointsSortByLowestLatency(t *testing.T) {
+	got := workingEndpoints([]*xraytest.ValidationResult{
+		{IP: "104.18.1.3", Port: 443, Success: true, Latency: 300 * time.Millisecond},
+		{IP: "104.18.1.1", Port: 443, Success: true, Latency: 80 * time.Millisecond},
+		{IP: "104.18.1.2", Port: 443, Success: true, Latency: 150 * time.Millisecond},
+		{IP: "104.18.1.4", Port: 443, Success: true},
+	})
+	want := []string{
+		"104.18.1.1:443",
+		"104.18.1.2:443",
+		"104.18.1.3:443",
+		"104.18.1.4:443",
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("working endpoints = %v, want %v", got, want)
+	}
+}
+
+func TestWorkingEndpointsKeepsFastestDuplicate(t *testing.T) {
+	got := workingEndpoints([]*xraytest.ValidationResult{
+		{IP: "104.18.1.1", Port: 443, Success: true, Latency: 300 * time.Millisecond},
+		{IP: "104.18.1.2", Port: 443, Success: true, Latency: 150 * time.Millisecond},
+		{IP: "104.18.1.1", Port: 443, Success: true, Latency: 80 * time.Millisecond},
+	})
+	want := []string{"104.18.1.1:443", "104.18.1.2:443"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("working endpoints = %v, want %v", got, want)
+	}
+}
+
 func TestParseEndpointLineSupportsIPAndPort(t *testing.T) {
 	endpoint, ok := parseEndpointLine("104.17.122.146:8443", 443)
 	if !ok {
