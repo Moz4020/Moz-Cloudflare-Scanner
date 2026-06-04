@@ -177,7 +177,7 @@ This is a terminal TUI, so run it inside a real SSH terminal. Clipboard copy can
 - Runtime files such as `ips.txt`, generated results, `configs.txt`, and `dist\` builds should not be committed.
 - This tool is for testing your own configs and endpoints.
 
-Tiny attribution: this project is a fork of SenPai Scanner.
+Attribution: this project is a fork of SenPai Scanner.
 
 ## License
 
