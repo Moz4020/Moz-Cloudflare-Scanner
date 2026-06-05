@@ -33,7 +33,7 @@ chmod +x moz-cloudflare-scanner-linux-amd64
 - Validate candidates through xray in Phase 2.
 - Copy working `IP:port` endpoints and save them to `ips.txt`.
 - Generate `configs.txt` for v2rayN from one working VLESS config plus `ips.txt`.
-- Supports Windows desktop usage and Linux amd64 VPS usage without installers.
+- Supports Windows desktop usage and Linux amd64 VPS usage, including an optional VPS installer.
 
 ## Usage
 
@@ -151,6 +151,32 @@ dist/moz-cloudflare-scanner-linux-amd64-0.1.1-Beta.tar.gz
 ```
 
 ## Run on an Ubuntu 24.04 VPS
+
+One-command install from the latest GitHub Linux release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Moz4020/Moz-Cloudflare-Scanner/main/installer.sh | sh
+```
+
+If `curl` is not installed:
+
+```bash
+wget -qO- https://raw.githubusercontent.com/Moz4020/Moz-Cloudflare-Scanner/main/installer.sh | sh
+```
+
+Then run:
+
+```bash
+~/.local/bin/moz-cloudflare-scanner
+```
+
+The installer keeps the app and runtime files in:
+
+```text
+~/moz-cloudflare-scanner
+```
+
+That is where `ips.txt`, `configs.txt`, and `MozCloudflareScannerResult-*.txt` will be written.
 
 If you use the release tarball, Go is not required on the VPS:
 
