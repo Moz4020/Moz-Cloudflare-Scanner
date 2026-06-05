@@ -4,13 +4,7 @@ package ui
 type Page int
 
 const (
-	PageHome           Page = iota
-	PageQuickScanCount      // count picker for Quick Scan
-	PageScanConfig
-	PageLiveScan
-	PageResults
-	PageColos
-	PageLiveColos
+	PageHome Page = iota
 	PageAbout
 	PageScanWithConfig // setup: source, count, workers, timeout, ports
 	PageGenerateConfigs

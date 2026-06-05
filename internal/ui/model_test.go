@@ -392,12 +392,9 @@ func TestGenerateV2RayConfigsWritesConfigsTxt(t *testing.T) {
 	}
 }
 
-func TestGenericScanCopyDoesNotExportHealthyIPs(t *testing.T) {
-	m := AppModel{page: PageResults}
-	next, _ := m.handleResultsKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
-	got := next.(AppModel).statusMsg
-	if !strings.Contains(got, "Find Working IPs") {
-		t.Fatalf("generic copy message = %q", got)
+func TestOnlyCurrentWorkflowPagesRemain(t *testing.T) {
+	if PageConfigPhase2 != 6 {
+		t.Fatalf("page enum includes removed legacy scan pages; last page = %d", PageConfigPhase2)
 	}
 }
 
