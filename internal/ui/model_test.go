@@ -35,6 +35,26 @@ func TestMenuOnlyShowsMainWorkflow(t *testing.T) {
 	}
 }
 
+func TestAboutMentionsLinuxVPS(t *testing.T) {
+	m := NewApp("test")
+	view := m.viewAbout()
+	if !strings.Contains(view, "Linux VPS") {
+		t.Fatalf("about view does not mention Linux VPS: %q", view)
+	}
+	if strings.Contains(view, "for Windows.") {
+		t.Fatalf("about view still reads Windows-only: %q", view)
+	}
+}
+
+func TestConfigOptionalShowsPhase2WorkerCap(t *testing.T) {
+	m := NewApp("test")
+	m.configOptionalRow = 2
+	view := m.viewConfigOptional()
+	if !strings.Contains(view, fmt.Sprintf("capped at %d", maxPhase2Workers)) {
+		t.Fatalf("optional config view does not show worker cap: %q", view)
+	}
+}
+
 func TestResolvePhase1OptionsUsesRandomCloudflareDefaults(t *testing.T) {
 	m := NewApp("test")
 	m.configURL = "vless://12345678-1234-1234-1234-123456789abc@example.com:443?encryption=none&security=tls&type=ws&host=example.com&path=%2F#test"

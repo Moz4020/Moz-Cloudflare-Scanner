@@ -1325,7 +1325,7 @@ func (m AppModel) viewHome() string {
 			"#B066FF", "#8F7CFF", "#6C8DFF", "#4B9BFF", "#35B8FF",
 		}) + "\n")
 	}
-	sb.WriteString(styleDim.Render("  simple Cloudflare endpoint toolkit"))
+	sb.WriteString(styleDim.Render("  Cloudflare endpoint scanner for desktop and VPS"))
 	sb.WriteString("\n")
 	sb.WriteString(styleAccent.Render("  " + m.version))
 	sb.WriteString("\n\n")
@@ -1903,13 +1903,13 @@ func (m AppModel) viewAbout() string {
 	sb.WriteString(styleTitle.Render("  Moz Cloudflare Scanner\n"))
 	sb.WriteString(styleDim.Render(fmt.Sprintf("  version %s", m.version)))
 	sb.WriteString("\n\n")
-	sb.WriteString(styleNormal.Render("  Simple Cloudflare endpoint toolkit for Windows."))
+	sb.WriteString(styleNormal.Render("  Terminal toolkit for Windows desktops and Linux VPS hosts."))
 	sb.WriteRune('\n')
 
-	sb.WriteString(styleNormal.Render("  Probes Cloudflare's edge nodes via TCP/TLS/HTTP, measures loss,"))
+	sb.WriteString(styleNormal.Render("  Finds reachable Cloudflare and custom-range endpoints, then validates"))
 	sb.WriteRune('\n')
 
-	sb.WriteString(styleNormal.Render("  jitter, and identifies the colo (PoP) behind each IP."))
+	sb.WriteString(styleNormal.Render("  real VLESS/Trojan configs through embedded xray-core."))
 	sb.WriteString("\n\n")
 
 	sb.WriteString(styleDim.Render("  github.com/Moz4020/Moz-Cloudflare-Scanner"))
@@ -2630,7 +2630,7 @@ func (m AppModel) handleScanWithConfigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m AppModel) viewConfigOptional() string {
 	var sb strings.Builder
-	sb.WriteString(styleTitle.Render("\n  ⚡  Find Working IPs — optional config\n"))
+	sb.WriteString(styleTitle.Render("\n  ⚡  Find Working IPs\n"))
 	sb.WriteString(fmt.Sprintf("%s\n\n", styleSep.Render("  "+strings.Repeat("─", minInt(m.width-4, 70)))))
 
 	rowLabel := func(row int, text string) {
@@ -2659,7 +2659,7 @@ func (m AppModel) viewConfigOptional() string {
 	if summary := parsedConfigSummary(m.configInput.Value()); summary != "" {
 		sb.WriteString(styleDim.Render("            "+summary) + "\n\n")
 	} else {
-		sb.WriteString(styleDim.Render("            optional — leave empty for Phase 1 only") + "\n\n")
+		sb.WriteString(styleDim.Render("            optional; leave empty to find healthy endpoints without xray validation") + "\n\n")
 	}
 
 	rowLabel(1, "  Test N ")
@@ -2683,7 +2683,7 @@ func (m AppModel) viewConfigOptional() string {
 	} else if m.isPhase2WorkersCustomSelected() && m.configPhase2WorkersCustom != "" {
 		sb.WriteString(styleDim.Render(fmt.Sprintf("            Phase 2 xray workers  (custom: %s)", m.configPhase2WorkersCustom)) + "\n\n")
 	} else {
-		sb.WriteString(styleDim.Render("            Phase 2 xray validation workers") + "\n\n")
+		sb.WriteString(styleDim.Render(fmt.Sprintf("            Phase 2 xray workers; capped at %d for stability", maxPhase2Workers)) + "\n\n")
 	}
 
 	rowLabel(3, "  Start  ")
