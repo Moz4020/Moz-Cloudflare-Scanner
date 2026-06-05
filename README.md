@@ -46,6 +46,14 @@ chmod +x moz-cloudflare-scanner-linux-amd64
 5. Let Phase 2 validate candidates through xray.
 6. Press `c` to copy working endpoints and save them to `ips.txt`.
 
+Source modes:
+
+```text
+Random IPs        Scan the default Cloudflare IPv4 ranges.
+ips.txt           Scan only IPs/CIDRs from ips.txt.
+ips.txt + default Scan ips.txt first, then continue with default Cloudflare IPv4 ranges.
+```
+
 Live scan output is written to:
 
 ```text
@@ -60,12 +68,17 @@ MozCloudflareScannerResult-YYYYMMDD-HHMMSS.txt
 4. Set an optional name prefix, such as `Moz Fast`.
 5. Generate `configs.txt`.
 
-`ips.txt` supports plain IPs and `IP:port` endpoints:
+For scanning, `ips.txt` supports plain IPs, `IP:port` endpoints, and small IPv4 CIDRs. In scan mode, the Ports row controls which ports are probed.
 
 ```text
 104.17.122.146
 104.18.152.95:8443
+45.130.125.0/24
 ```
+
+Large CIDRs are rejected to avoid accidental huge scans.
+
+For config generation, `ips.txt` supports plain IPs and `IP:port` endpoints. Generated configs preserve endpoint ports from `ips.txt`.
 
 Generated remarks use numbered names:
 

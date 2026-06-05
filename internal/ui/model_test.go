@@ -53,17 +53,26 @@ func TestResolvePhase1OptionsUsesRandomCloudflareDefaults(t *testing.T) {
 	if opts.rawURL != m.configURL {
 		t.Fatal("rawURL was not preserved")
 	}
-	if opts.fromFile {
-		t.Fatal("fromFile = true, want random Cloudflare IPs")
+	if opts.sourceMode != configIPSourceDefault {
+		t.Fatalf("sourceMode = %d, want default", opts.sourceMode)
 	}
 }
 
 func TestResolvePhase1OptionsFromFile(t *testing.T) {
 	m := NewApp("test")
-	m.configIPMode = 1
+	m.configIPMode = configIPSourceFile
 	opts := m.resolvePhase1Options()
-	if !opts.fromFile {
-		t.Fatal("fromFile = false, want true")
+	if opts.sourceMode != configIPSourceFile {
+		t.Fatalf("sourceMode = %d, want ips.txt", opts.sourceMode)
+	}
+}
+
+func TestResolvePhase1OptionsFileThenDefault(t *testing.T) {
+	m := NewApp("test")
+	m.configIPMode = configIPSourceFileThenDefault
+	opts := m.resolvePhase1Options()
+	if opts.sourceMode != configIPSourceFileThenDefault {
+		t.Fatalf("sourceMode = %d, want ips.txt + default", opts.sourceMode)
 	}
 }
 
@@ -103,6 +112,71 @@ func TestLoadDefaultIPsFileFindsWorkingDirectoryFile(t *testing.T) {
 	}
 	if len(ips) != 2 {
 		t.Fatalf("loaded %d IPs, want 2", len(ips))
+	}
+}
+
+func TestLoadIPsSupportsCIDRsAndEndpoints(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ips.txt")
+	text := strings.Join([]string{
+		"45.130.125.0/30",
+		"104.18.1.1:8443",
+		"104.18.1.1:443",
+		"# comment",
+		"",
+	}, "\n")
+	if err := os.WriteFile(path, []byte(text), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ips, err := loadIPs(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, len(ips))
+	for i, ip := range ips {
+		got[i] = ip.String()
+	}
+	want := []string{
+		"45.130.125.0",
+		"45.130.125.1",
+		"45.130.125.2",
+		"45.130.125.3",
+		"104.18.1.1",
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("ips = %v, want %v", got, want)
+	}
+}
+
+func TestLoadIPsRejectsHugeCIDR(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ips.txt")
+	if err := os.WriteFile(path, []byte("45.130.0.0/15\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := loadIPs(path); err == nil || !strings.Contains(err.Error(), "maximum allowed") {
+		t.Fatalf("loadIPs error = %v, want maximum allowed error", err)
+	}
+}
+
+func TestLoadDefaultIPsFileReturnsParseError(t *testing.T) {
+	dir := t.TempDir()
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWD) })
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ips.txt"), []byte("45.130.0.0/15\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := loadDefaultIPsFile(); err == nil || !strings.Contains(err.Error(), "maximum allowed") {
+		t.Fatalf("loadDefaultIPsFile error = %v, want maximum allowed error", err)
 	}
 }
 

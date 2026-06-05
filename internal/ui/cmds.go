@@ -3,6 +3,7 @@ package ui
 import (
 	"bufio"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"os"
@@ -306,26 +307,39 @@ func runConfigPhase1(opts configPhase1Options) {
 
 	var ipStream <-chan net.IP
 	neighbor := neighborScanOpts{}
-	if opts.fromFile {
+	if opts.sourceMode == configIPSourceFile || opts.sourceMode == configIPSourceFileThenDefault {
 		ips, err := loadDefaultIPsFile()
-		if err != nil {
+		if err != nil && (opts.sourceMode == configIPSourceFile || !isDefaultIPsFileMissing(err)) {
 			if prog != nil {
 				prog.Send(ConfigPhase1ErrMsg{Err: err.Error()})
 			}
 			return
 		}
-		if len(ips) == 0 {
+		if len(ips) == 0 && opts.sourceMode == configIPSourceFile {
 			if prog != nil {
-				prog.Send(ConfigPhase1ErrMsg{Err: "ips.txt is empty — add one IP per line"})
+				prog.Send(ConfigPhase1ErrMsg{Err: "ips.txt is empty — add IPs, endpoints, or small CIDRs"})
 			}
 			return
 		}
-		ch := make(chan net.IP, len(ips))
-		for _, ip := range ips {
-			ch <- ip
+		if opts.sourceMode == configIPSourceFile {
+			ipStream = streamStaticIPs(ctx, ips)
+		} else {
+			src, err := ipsrc.New(true, false, nil)
+			if err != nil {
+				if prog != nil {
+					prog.Send(ConfigPhase1DoneMsg{})
+				}
+				return
+			}
+			ipStream = streamSeedThenRandom(ctx, ips, src.Stream(ctx, opts.count))
+			neighbor = neighborScanOpts{
+				enabled:  true,
+				nets:     src.IPv4Nets(),
+				radius:   ipsrc.DefaultNeighborRadius,
+				perHit:   ipsrc.DefaultNeighborPerHit,
+				maxTotal: ipsrc.DefaultNeighborMaxTotal,
+			}
 		}
-		close(ch)
-		ipStream = ch
 	} else {
 		src, err := ipsrc.New(true, false, nil)
 		if err != nil {
@@ -351,6 +365,43 @@ func runConfigPhase1(opts configPhase1Options) {
 	if prog != nil {
 		prog.Send(ConfigPhase1DoneMsg{})
 	}
+}
+
+func streamStaticIPs(ctx context.Context, ips []net.IP) <-chan net.IP {
+	ch := make(chan net.IP, len(ips))
+	go func() {
+		defer close(ch)
+		for _, ip := range ips {
+			select {
+			case <-ctx.Done():
+				return
+			case ch <- ip:
+			}
+		}
+	}()
+	return ch
+}
+
+func streamSeedThenRandom(ctx context.Context, seed []net.IP, fallback <-chan net.IP) <-chan net.IP {
+	ch := make(chan net.IP, 64)
+	go func() {
+		defer close(ch)
+		for _, ip := range seed {
+			select {
+			case <-ctx.Done():
+				return
+			case ch <- ip:
+			}
+		}
+		for ip := range fallback {
+			select {
+			case <-ctx.Done():
+				return
+			case ch <- ip:
+			}
+		}
+	}()
+	return ch
 }
 
 type configProbeJob struct {
@@ -583,13 +634,24 @@ func ipsFileSearchPaths() []string {
 }
 
 func loadDefaultIPsFile() ([]net.IP, error) {
+	var firstErr error
 	for _, path := range ipsFileSearchPaths() {
 		ips, err := loadIPs(path)
 		if err == nil {
 			return ips, nil
 		}
+		if !os.IsNotExist(err) && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if firstErr != nil {
+		return nil, firstErr
 	}
 	return nil, fmt.Errorf("ips.txt not found — place it next to the binary or run folder")
+}
+
+func isDefaultIPsFileMissing(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "ips.txt not found")
 }
 
 type configEndpoint struct {
@@ -620,18 +682,75 @@ func loadIPs(path string) ([]net.IP, error) {
 		defer f.Close()
 	}
 	var ips []net.IP
+	seen := make(map[string]struct{})
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "ip") {
-			continue
+		lineIPs, err := parseIPSourceLine(sc.Text())
+		if err != nil {
+			return nil, err
 		}
-		field := strings.SplitN(line, ",", 2)[0]
-		if ip := net.ParseIP(strings.TrimSpace(field)); ip != nil {
+		for _, ip := range lineIPs {
+			key := ip.String()
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
 			ips = append(ips, ip)
 		}
 	}
 	return ips, sc.Err()
+}
+
+const maxIPsTxtCIDRExpansion = 65536
+
+func parseIPSourceLine(line string) ([]net.IP, error) {
+	line = strings.TrimSpace(line)
+	if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(strings.ToLower(line), "ip") {
+		return nil, nil
+	}
+	field := strings.TrimSpace(strings.SplitN(line, ",", 2)[0])
+	if parts := strings.Fields(field); len(parts) > 0 {
+		field = parts[0]
+	}
+	if field == "" {
+		return nil, nil
+	}
+	if strings.Contains(field, "/") {
+		return expandCIDRLine(field)
+	}
+	if endpoint, ok := parseEndpointLine(field, 443); ok {
+		return []net.IP{endpoint.IP}, nil
+	}
+	return nil, nil
+}
+
+func expandCIDRLine(raw string) ([]net.IP, error) {
+	ip, ipNet, err := net.ParseCIDR(raw)
+	if err != nil {
+		return nil, fmt.Errorf("invalid CIDR %q in ips.txt: %w", raw, err)
+	}
+	ip = ip.To4()
+	if ip == nil {
+		return nil, fmt.Errorf("IPv6 CIDR %q in ips.txt is not supported in config source mode", raw)
+	}
+	ones, bits := ipNet.Mask.Size()
+	if bits != 32 {
+		return nil, fmt.Errorf("CIDR %q is not IPv4", raw)
+	}
+	size := uint64(1) << uint(bits-ones)
+	if size > maxIPsTxtCIDRExpansion {
+		return nil, fmt.Errorf("CIDR %q expands to %d IPs; maximum allowed in ips.txt is %d", raw, size, maxIPsTxtCIDRExpansion)
+	}
+	base := binary.BigEndian.Uint32(ipNet.IP.To4())
+	out := make([]net.IP, 0, int(size))
+	for i := uint64(0); i < size; i++ {
+		next := make(net.IP, 4)
+		binary.BigEndian.PutUint32(next, base+uint32(i))
+		if ipNet.Contains(next) {
+			out = append(out, next)
+		}
+	}
+	return out, nil
 }
 
 func loadEndpoints(path string, defaultPort int) ([]configEndpoint, error) {
