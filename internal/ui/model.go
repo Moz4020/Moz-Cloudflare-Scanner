@@ -2976,63 +2976,14 @@ func (m AppModel) resolveTopN() int {
 	return configTopNValues[m.configTopNIdx]
 }
 
-// ConfigDoneMsg signals all config validations are complete.
+// ConfigDoneMsg signals Phase 2 validation is complete.
 type ConfigDoneMsg struct{}
-
-// ConfigBatchResultMsg is no longer used — results come one by one via ConfigProgressMsg.
-type ConfigBatchResultMsg struct {
-	Results []*xraytest.ValidationResult
-}
 
 // ConfigProgressMsg carries a single result during scanning.
 type ConfigProgressMsg struct {
 	Result *xraytest.ValidationResult
 	Done   int
 	Total  int
-}
-
-func (m AppModel) startConfigScan(rawURL string) tea.Cmd {
-	return func() tea.Msg {
-		go runConfigScan(rawURL)
-		return nil
-	}
-}
-
-func runConfigScan(rawURL string) {
-	cfg, err := xraytest.ParseProxyURL(rawURL)
-	if err != nil {
-		if prog != nil {
-			prog.Send(ConfigDoneMsg{})
-		}
-		return
-	}
-
-	// Top CF IPs to test
-	testIPs := []string{
-		"104.18.5.1", "104.17.0.1", "172.66.40.1",
-		"172.67.186.127", "104.21.19.146", "104.16.0.1",
-		"104.19.229.21", "104.18.10.1", "104.17.100.1",
-		"104.16.200.1",
-	}
-
-	ctx := context.Background()
-	total := len(testIPs)
-
-	for i, ip := range testIPs {
-		swapped := cfg.WithAddress(ip)
-		r := xraytest.ValidateConfig(ctx, swapped, 20*time.Second)
-		if prog != nil {
-			prog.Send(ConfigProgressMsg{
-				Result: r,
-				Done:   i + 1,
-				Total:  total,
-			})
-		}
-	}
-
-	if prog != nil {
-		prog.Send(ConfigDoneMsg{})
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -3087,106 +3038,6 @@ func quickTimeoutLabels() []string {
 		out[i] = p.label
 	}
 	return out
-}
-
-// ---------------------------------------------------------------------------
-// Config Setup page
-// ---------------------------------------------------------------------------
-
-func (m AppModel) viewConfigSetup() string {
-	var sb strings.Builder
-
-	sb.WriteString(styleTitle.Render("\n  ⚡  Scan with Config — Setup\n"))
-	sb.WriteString(fmt.Sprintf("%s\n\n", styleSep.Render("  "+strings.Repeat("─", minInt(m.width-4, 70)))))
-
-	sb.WriteString(styleNormal.Render("  Phase 1: Fast connectivity scan to find reachable IPs") + "\n")
-	sb.WriteString(styleNormal.Render("  Phase 2: Test a spread of candidates with your actual xray config") + "\n\n")
-
-	// Count row
-	countLabel := "  Count   "
-	for i, label := range configCountLabels {
-		if i == m.configCountIdx && m.configSetupRow == 0 {
-			sb.WriteString(styleSelected.Render(" " + label + " "))
-		} else {
-			sb.WriteString(styleNormal.Render("  " + label + "  "))
-		}
-		if i < len(configCountLabels)-1 {
-			sb.WriteString(styleDim.Render("│"))
-		}
-	}
-	sb.WriteString("\n")
-	if m.configSetupRow == 0 {
-		sb.WriteString(styleAccent.Render(countLabel) + styleDim.Render("IPs to probe in Phase 1") + "\n\n")
-	} else {
-		sb.WriteString(styleDim.Render(countLabel+"IPs to probe in Phase 1") + "\n\n")
-	}
-
-	// Phase 2 sample size row
-	topLabel := "  Test N  "
-	for i, label := range configTopNLabels {
-		if i == m.configTopNIdx && m.configSetupRow == 1 {
-			sb.WriteString(styleSelected.Render(" " + label + " "))
-		} else {
-			sb.WriteString(styleNormal.Render("  " + label + "  "))
-		}
-		if i < len(configTopNLabels)-1 {
-			sb.WriteString(styleDim.Render("│"))
-		}
-	}
-	sb.WriteString("\n")
-	if m.configSetupRow == 1 {
-		sb.WriteString(styleAccent.Render(topLabel) + styleDim.Render("candidates to validate, spread across latency and ranges") + "\n\n")
-	} else {
-		sb.WriteString(styleDim.Render(topLabel+"candidates to validate, spread across latency and ranges") + "\n\n")
-	}
-
-	sb.WriteString(styleHint.Render("  ↑/↓ row   ←/→ option   enter start   esc back") + "\n")
-
-	return sb.String()
-}
-
-func (m AppModel) handleConfigSetupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "esc":
-		m.page = PageScanWithConfig
-		return m, nil
-	case "up", "k":
-		if m.configSetupRow > 0 {
-			m.configSetupRow--
-		}
-	case "down", "j":
-		if m.configSetupRow < 1 {
-			m.configSetupRow++
-		}
-	case "left", "h":
-		if m.configSetupRow == 0 && m.configCountIdx > 0 {
-			m.configCountIdx--
-		} else if m.configSetupRow == 1 && m.configTopNIdx > 0 {
-			m.configTopNIdx--
-		}
-	case "right", "l":
-		if m.configSetupRow == 0 && m.configCountIdx < len(configCountLabels)-1 {
-			m.configCountIdx++
-		} else if m.configSetupRow == 1 && m.configTopNIdx < len(configTopNLabels)-1 {
-			m.configTopNIdx++
-		}
-	case "enter":
-		// Start Phase 1
-		m.page = PageConfigPhase1
-		m.configPhase1Results = nil
-		m.configPhase1Done = false
-		m.configPhase1Stats = StatsMsg{}
-		count := configCountValues[m.configCountIdx]
-		if count == 0 {
-			count, _ = strconv.Atoi(m.configCountCustom)
-			if count <= 0 {
-				count = 1000
-			}
-		}
-		m.configPhase1Total = count
-		return m, m.startConfigPhase1()
-	}
-	return m, nil
 }
 
 // ---------------------------------------------------------------------------

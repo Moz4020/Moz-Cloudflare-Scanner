@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -12,6 +13,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/moz/moz-cloudflare-scanner/internal/prober"
 	"github.com/moz/moz-cloudflare-scanner/internal/result"
 	"github.com/moz/moz-cloudflare-scanner/internal/xraytest"
 )
@@ -559,6 +561,60 @@ func TestSelectPhase2CandidatesDeduplicatesEndpoints(t *testing.T) {
 	}
 	if got[0].IP.String() != "104.18.1.1" || got[1].IP.String() != "104.18.1.2" {
 		t.Fatalf("selected candidates = %v", phase2SelectionIPs(got))
+	}
+}
+
+func TestNeighborExpansionDoesNotBlockSingleWorkerScan(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+
+	_, port, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	portNum, err := net.LookupPort("tcp", port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, loopbackNet, err := net.ParseCIDR("127.0.0.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	src := make(chan net.IP, 1)
+	src <- net.ParseIP("127.0.0.1")
+	close(src)
+
+	done := make(chan struct{})
+	go func() {
+		runConfigPortProbes(
+			context.Background(),
+			src,
+			[]int{portNum},
+			1,
+			prober.Config{Port: portNum, Mode: prober.ModeTCP, Tries: 1, Timeout: 20 * time.Millisecond},
+			func(*result.Result) {},
+			neighborScanOpts{enabled: true, nets: []*net.IPNet{loopbackNet}, radius: 16, perHit: 12, maxTotal: 12},
+		)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("neighbor expansion blocked the single worker scan")
 	}
 }
 

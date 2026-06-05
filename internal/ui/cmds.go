@@ -393,7 +393,7 @@ func runConfigPortProbes(ctx context.Context, ips <-chan net.IP, ports []int, co
 		}
 	}
 
-	jobs := make(chan configProbeJob, concurrency*2)
+	jobs := make(chan configProbeJob, maxInt(concurrency*4, len(ports)*concurrency*2))
 	var pending int64
 	var neighborsQueued int64
 	seen := make(map[string]struct{})
@@ -403,7 +403,13 @@ func runConfigPortProbes(ctx context.Context, ips <-chan net.IP, ports []int, co
 		return fmt.Sprintf("%s:%d", ip.String(), port)
 	}
 
-	submit := func(ip net.IP, port int) bool {
+	forget := func(key string) {
+		seenMu.Lock()
+		delete(seen, key)
+		seenMu.Unlock()
+	}
+
+	submit := func(ip net.IP, port int, block bool) bool {
 		key := jobKey(ip, port)
 		seenMu.Lock()
 		if _, ok := seen[key]; ok {
@@ -414,18 +420,34 @@ func runConfigPortProbes(ctx context.Context, ips <-chan net.IP, ports []int, co
 		seenMu.Unlock()
 
 		atomic.AddInt64(&pending, 1)
+		job := configProbeJob{ip: ip, port: port}
+		if block {
+			select {
+			case <-ctx.Done():
+				atomic.AddInt64(&pending, -1)
+				forget(key)
+				return false
+			case jobs <- job:
+				return true
+			}
+		}
 		select {
 		case <-ctx.Done():
 			atomic.AddInt64(&pending, -1)
+			forget(key)
 			return false
-		case jobs <- configProbeJob{ip: ip, port: port}:
+		case jobs <- job:
 			return true
+		default:
+			atomic.AddInt64(&pending, -1)
+			forget(key)
+			return false
 		}
 	}
 
 	enqueueIP := func(ip net.IP) {
 		for _, port := range ports {
-			submit(ip, port)
+			submit(ip, port, true)
 		}
 	}
 
@@ -449,7 +471,7 @@ func runConfigPortProbes(ctx context.Context, ips <-chan net.IP, ports []int, co
 			}
 			added := 0
 			for _, port := range ports {
-				if submit(nip, port) {
+				if submit(nip, port, false) {
 					added++
 				}
 			}
