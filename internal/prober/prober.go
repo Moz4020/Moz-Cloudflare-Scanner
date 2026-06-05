@@ -258,12 +258,16 @@ func probeHTTP(ctx context.Context, ip net.IP, port int, sni string, timeout tim
 		if speedBytes > 0 {
 			throughput = probeDownload(ctx, ip, port, timeout, speedBytes)
 		}
-		if speedBytes > 0 || requireWS {
+		if shouldProbeWebSocket(requireWS) {
 			wsOk = probeWebSocket(ctx, ip, port, sni, wsHost, wsPath, timeout)
 		}
 	}
 
 	return
+}
+
+func shouldProbeWebSocket(requireWS bool) bool {
+	return requireWS
 }
 
 // probeWebSocket tests whether WebSocket-grade TLS connections reach the

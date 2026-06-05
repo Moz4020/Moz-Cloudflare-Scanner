@@ -315,7 +315,7 @@ func runConfigPhase1(opts configPhase1Options) {
 			}
 			return
 		}
-		if len(ips) == 0 && opts.sourceMode == configIPSourceFile {
+		if len(ips) == 0 {
 			if prog != nil {
 				prog.Send(ConfigPhase1ErrMsg{Err: "ips.txt is empty — add IPs, endpoints, or small CIDRs"})
 			}

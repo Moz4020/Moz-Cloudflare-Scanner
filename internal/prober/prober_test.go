@@ -35,6 +35,15 @@ func TestNormalizeWSPath(t *testing.T) {
 	}
 }
 
+func TestShouldProbeWebSocketOnlyWhenRequired(t *testing.T) {
+	if shouldProbeWebSocket(false) {
+		t.Fatal("speed-only HTTP probe should not run WebSocket tunnel check")
+	}
+	if !shouldProbeWebSocket(true) {
+		t.Fatal("WebSocket-required config should run WebSocket tunnel check")
+	}
+}
+
 func TestProbeWebSocketUsesConfiguredHostAndPath(t *testing.T) {
 	cert, err := testCertificate()
 	if err != nil {
