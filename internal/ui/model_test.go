@@ -67,15 +67,6 @@ func TestResolvePhase1OptionsFromFile(t *testing.T) {
 	}
 }
 
-func TestResolvePhase1OptionsFileThenDefault(t *testing.T) {
-	m := NewApp("test")
-	m.configIPMode = configIPSourceFileThenDefault
-	opts := m.resolvePhase1Options()
-	if opts.sourceMode != configIPSourceFileThenDefault {
-		t.Fatalf("sourceMode = %d, want ips.txt + default", opts.sourceMode)
-	}
-}
-
 func TestResolveConfigPortsMultiSelect(t *testing.T) {
 	m := NewApp("test")
 	m.configURL = "vless://12345678-1234-1234-1234-123456789abc@example.com:443?encryption=none&security=tls&type=ws&host=example.com&path=%2F#test"
@@ -517,6 +508,30 @@ func TestPhase2WorkerCountScalesForLargeBatches(t *testing.T) {
 	}
 	if got := phase2WorkerCount(3); got != 3 {
 		t.Fatalf("workers for small batch = %d, want 3", got)
+	}
+}
+
+func TestClampPhase2Workers(t *testing.T) {
+	if got := clampPhase2Workers(100); got != maxPhase2Workers {
+		t.Fatalf("clamped workers = %d, want %d", got, maxPhase2Workers)
+	}
+	if got := clampPhase2Workers(12); got != 12 {
+		t.Fatalf("clamped workers = %d, want 12", got)
+	}
+}
+
+func TestUniquePhase2Candidates(t *testing.T) {
+	got := uniquePhase2Candidates([]*result.Result{
+		phase2CandidateForTest("104.18.1.1", 100*time.Millisecond),
+		phase2CandidateForTest("104.18.1.1", 200*time.Millisecond),
+		phase2CandidateForTest("104.18.1.2", 150*time.Millisecond),
+		nil,
+	})
+	if len(got) != 2 {
+		t.Fatalf("unique candidates = %d, want 2", len(got))
+	}
+	if got[0].IP.String() != "104.18.1.1" || got[1].IP.String() != "104.18.1.2" {
+		t.Fatalf("unique candidates = %v", phase2SelectionIPs(got))
 	}
 }
 

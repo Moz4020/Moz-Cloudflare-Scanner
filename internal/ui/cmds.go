@@ -307,9 +307,9 @@ func runConfigPhase1(opts configPhase1Options) {
 
 	var ipStream <-chan net.IP
 	neighbor := neighborScanOpts{}
-	if opts.sourceMode == configIPSourceFile || opts.sourceMode == configIPSourceFileThenDefault {
+	if opts.sourceMode == configIPSourceFile {
 		ips, err := loadDefaultIPsFile()
-		if err != nil && (opts.sourceMode == configIPSourceFile || !isDefaultIPsFileMissing(err)) {
+		if err != nil {
 			if prog != nil {
 				prog.Send(ConfigPhase1ErrMsg{Err: err.Error()})
 			}
@@ -321,25 +321,7 @@ func runConfigPhase1(opts configPhase1Options) {
 			}
 			return
 		}
-		if opts.sourceMode == configIPSourceFile {
-			ipStream = streamStaticIPs(ctx, ips)
-		} else {
-			src, err := ipsrc.New(true, false, nil)
-			if err != nil {
-				if prog != nil {
-					prog.Send(ConfigPhase1DoneMsg{})
-				}
-				return
-			}
-			ipStream = streamSeedThenRandom(ctx, ips, src.Stream(ctx, opts.count))
-			neighbor = neighborScanOpts{
-				enabled:  true,
-				nets:     src.IPv4Nets(),
-				radius:   ipsrc.DefaultNeighborRadius,
-				perHit:   ipsrc.DefaultNeighborPerHit,
-				maxTotal: ipsrc.DefaultNeighborMaxTotal,
-			}
-		}
+		ipStream = streamStaticIPs(ctx, ips)
 	} else {
 		src, err := ipsrc.New(true, false, nil)
 		if err != nil {
@@ -372,28 +354,6 @@ func streamStaticIPs(ctx context.Context, ips []net.IP) <-chan net.IP {
 	go func() {
 		defer close(ch)
 		for _, ip := range ips {
-			select {
-			case <-ctx.Done():
-				return
-			case ch <- ip:
-			}
-		}
-	}()
-	return ch
-}
-
-func streamSeedThenRandom(ctx context.Context, seed []net.IP, fallback <-chan net.IP) <-chan net.IP {
-	ch := make(chan net.IP, 64)
-	go func() {
-		defer close(ch)
-		for _, ip := range seed {
-			select {
-			case <-ctx.Done():
-				return
-			case ch <- ip:
-			}
-		}
-		for ip := range fallback {
 			select {
 			case <-ctx.Done():
 				return
@@ -648,10 +608,6 @@ func loadDefaultIPsFile() ([]net.IP, error) {
 		return nil, firstErr
 	}
 	return nil, fmt.Errorf("ips.txt not found — place it next to the binary or run folder")
-}
-
-func isDefaultIPsFileMissing(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "ips.txt not found")
 }
 
 type configEndpoint struct {

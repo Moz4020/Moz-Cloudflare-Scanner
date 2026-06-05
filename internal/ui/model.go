@@ -169,7 +169,7 @@ var phase2WorkersPresets = []quickPreset{
 	{"Safe 10", "10"},
 	{"Balanced 30", "30"},
 	{"Fast 60", "60"},
-	{"Max 100", "100"},
+	{"Max 64", "64"},
 	{"Custom", ""},
 }
 
@@ -293,7 +293,7 @@ type menuEntry struct {
 }
 
 var menuEntries = []menuEntry{
-	{"Find Working IPs", "scan Cloudflare IPs — config optional"},
+	{"Find Working IPs", "scan default Cloudflare or ips.txt ranges"},
 	{"Generate V2Ray Configs", "turn ips.txt + one VLESS URL into configs.txt"},
 	{"About", ""},
 	{"Quit", ""},
@@ -2194,11 +2194,9 @@ func (m AppModel) viewScanWithConfig() string {
 		renderPills(configIPModeLabels, m.configIPMode)
 		sb.WriteString("\n")
 		if m.configIPMode == configIPSourceDefault {
-			sb.WriteString(styleDim.Render("            random Cloudflare IPv4 IPs") + "\n\n")
-		} else if m.configIPMode == configIPSourceFileThenDefault {
-			sb.WriteString(styleDim.Render("            probe ips.txt first, then random Cloudflare IPv4 IPs") + "\n\n")
+			sb.WriteString(styleDim.Render("            random sample from official Cloudflare IPv4 ranges") + "\n\n")
 		} else {
-			sb.WriteString(styleDim.Render("            read custom IPs/CIDRs from ips.txt next to the app or working directory") + "\n\n")
+			sb.WriteString(styleDim.Render("            exact IPs and small IPv4 CIDRs from ips.txt") + "\n\n")
 		}
 
 		// Row 1: Count
@@ -2212,8 +2210,6 @@ func (m AppModel) viewScanWithConfig() string {
 			sb.WriteString(styleDim.Render(fmt.Sprintf("            IPs to probe in Phase 1  (custom: %s)", m.configCountCustom)) + "\n\n")
 		} else if m.configIPMode == configIPSourceFile {
 			sb.WriteString(styleDim.Render("            ignored when Source is ips.txt — all IPs/CIDRs in ips.txt are used") + "\n\n")
-		} else if m.configIPMode == configIPSourceFileThenDefault {
-			sb.WriteString(styleDim.Render("            random Cloudflare IPs after all IPs/CIDRs in ips.txt are probed") + "\n\n")
 		} else {
 			sb.WriteString(styleDim.Render("            IPs to probe in Phase 1") + "\n\n")
 		}
@@ -3005,10 +3001,9 @@ var configTopNLabels = []string{"10", "25", "50", "100", "All", "Custom"}
 const (
 	configIPSourceDefault = iota
 	configIPSourceFile
-	configIPSourceFileThenDefault
 )
 
-var configIPModeLabels = []string{"Random IPs", "ips.txt", "ips.txt + default"}
+var configIPModeLabels = []string{"Default CF", "ips.txt"}
 var configPortChoices = []struct {
 	label string
 	port  int
@@ -3192,8 +3187,6 @@ func (m AppModel) viewConfigPhase1() string {
 	source := "Random Cloudflare"
 	if m.configIPMode == configIPSourceFile {
 		source = "ips.txt"
-	} else if m.configIPMode == configIPSourceFileThenDefault {
-		source = "ips.txt + default"
 	}
 	probe := "http"
 	if withConfig {
@@ -3249,10 +3242,7 @@ func (m AppModel) viewConfigPhase1() string {
 			sb.WriteString(styleDim.Render("  Phase 1 only finds candidates; Phase 2 confirms xray works.\n\n"))
 		}
 	} else if m.configIPMode == configIPSourceFile {
-		sb.WriteString(styleNormal.Render("  Probing IPs/CIDRs from ips.txt on the selected ports...\n\n"))
-	} else if m.configIPMode == configIPSourceFileThenDefault {
-		sb.WriteString(styleNormal.Render("  Probing ips.txt first, then random Cloudflare IPv4 IPs...\n"))
-		sb.WriteString(styleDim.Render("  ips.txt supports IPs, IP:port endpoints, and small IPv4 CIDRs like 45.130.125.0/24\n\n"))
+		sb.WriteString(styleNormal.Render("  Probing IPs and small CIDRs from ips.txt on the selected ports...\n\n"))
 	} else if !withConfig {
 		sb.WriteString(styleNormal.Render("  Scanning random Cloudflare IPv4 IPs (standard HTTP probe)...\n"))
 		sb.WriteString(styleDim.Render("  healthy hits also explore nearby addresses in the same Cloudflare block\n\n"))
@@ -3421,16 +3411,9 @@ func (m AppModel) phase1TargetTotal(count int) int {
 	if ports <= 0 {
 		ports = 1
 	}
-	if m.configIPMode == configIPSourceFile || m.configIPMode == configIPSourceFileThenDefault {
+	if m.configIPMode == configIPSourceFile {
 		if ips, err := loadDefaultIPsFile(); err == nil {
-			total := len(ips)
-			if m.configIPMode == configIPSourceFileThenDefault {
-				total += count
-			}
-			return total * ports
-		}
-		if m.configIPMode == configIPSourceFileThenDefault {
-			return count * ports
+			return len(ips) * ports
 		}
 		return 0
 	}
@@ -3545,7 +3528,10 @@ func phase2RangeKey(ip net.IP) string {
 	return fmt.Sprintf("%x:%x", ip16[0:2], ip16[2:4])
 }
 
-const phase2ValidationTimeout = 7 * time.Second
+const (
+	phase2ValidationTimeout = 7 * time.Second
+	maxPhase2Workers        = 64
+)
 
 func phase2WorkerCount(total int) int {
 	switch {
@@ -3570,13 +3556,20 @@ func (m AppModel) resolvePhase2Workers() int {
 		if n <= 0 {
 			return 50
 		}
-		return n
+		return clampPhase2Workers(n)
 	}
 	n, _ := strconv.Atoi(wp.value)
 	if n <= 0 {
 		return 50
 	}
-	return n
+	return clampPhase2Workers(n)
+}
+
+func clampPhase2Workers(workers int) int {
+	if workers > maxPhase2Workers {
+		return maxPhase2Workers
+	}
+	return workers
 }
 
 // ---------------------------------------------------------------------------
@@ -3605,10 +3598,12 @@ func runConfigPhase2(rawURL string, topIPs []*result.Result, workers int) {
 	scanCancel = cancel
 	defer cancel()
 
+	topIPs = uniquePhase2Candidates(topIPs)
 	total := len(topIPs)
 	if workers <= 0 {
 		workers = phase2WorkerCount(total)
 	}
+	workers = minInt(workers, total)
 	if workers <= 0 {
 		if prog != nil {
 			prog.Send(ConfigDoneMsg{})
@@ -3670,4 +3665,21 @@ enqueue:
 	if prog != nil {
 		prog.Send(ConfigDoneMsg{})
 	}
+}
+
+func uniquePhase2Candidates(rows []*result.Result) []*result.Result {
+	out := make([]*result.Result, 0, len(rows))
+	seen := make(map[string]struct{})
+	for _, r := range rows {
+		if r == nil || r.IP == nil {
+			continue
+		}
+		key := formatEndpoint(r.IP.String(), r.Port)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, r)
+	}
+	return out
 }

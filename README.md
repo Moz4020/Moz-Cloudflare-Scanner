@@ -49,9 +49,8 @@ chmod +x moz-cloudflare-scanner-linux-amd64
 Source modes:
 
 ```text
-Random IPs        Scan the default Cloudflare IPv4 ranges.
+Default CF        Scan the default Cloudflare IPv4 ranges.
 ips.txt           Scan only IPs/CIDRs from ips.txt.
-ips.txt + default Scan ips.txt first, then continue with default Cloudflare IPv4 ranges.
 ```
 
 Live scan output is written to:
