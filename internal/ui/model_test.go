@@ -292,6 +292,31 @@ func TestWorkingEndpointsKeepsFastestDuplicate(t *testing.T) {
 	}
 }
 
+func TestVisibleValidationRowsFinishedShowsFastestWorkingFirst(t *testing.T) {
+	rows := visibleValidationRows([]*xraytest.ValidationResult{
+		{IP: "104.18.1.3", Port: 443, Success: false, Error: "failed"},
+		{IP: "104.18.1.2", Port: 443, Success: true, Latency: 180 * time.Millisecond},
+		{IP: "104.18.1.1", Port: 443, Success: true, Latency: 70 * time.Millisecond},
+	}, 3, true)
+	if len(rows) != 3 {
+		t.Fatalf("rows = %d, want 3", len(rows))
+	}
+	if rows[0].IP != "104.18.1.1" || rows[1].IP != "104.18.1.2" {
+		t.Fatalf("finished rows order = %v", rows)
+	}
+}
+
+func TestVisibleValidationRowsRunningShowsRecentRows(t *testing.T) {
+	rows := visibleValidationRows([]*xraytest.ValidationResult{
+		{IP: "104.18.1.1"},
+		{IP: "104.18.1.2"},
+		{IP: "104.18.1.3"},
+	}, 2, false)
+	if len(rows) != 2 || rows[0].IP != "104.18.1.2" || rows[1].IP != "104.18.1.3" {
+		t.Fatalf("running rows = %v", rows)
+	}
+}
+
 func TestParseEndpointLineSupportsIPAndPort(t *testing.T) {
 	endpoint, ok := parseEndpointLine("104.17.122.146:8443", 443)
 	if !ok {
@@ -519,6 +544,21 @@ func TestSelectPhase2CandidatesAllUsesSpreadOrder(t *testing.T) {
 	}
 	if got[5].Avg() < 180*time.Millisecond {
 		t.Fatalf("all-candidate order stayed too latency-sorted; sixth latency = %s", got[5].Avg())
+	}
+}
+
+func TestSelectPhase2CandidatesDeduplicatesEndpoints(t *testing.T) {
+	results := []*result.Result{
+		phase2CandidateForTest("104.18.1.1", 100*time.Millisecond),
+		phase2CandidateForTest("104.18.1.1", 110*time.Millisecond),
+		phase2CandidateForTest("104.18.1.2", 120*time.Millisecond),
+	}
+	got := selectPhase2Candidates(results, 0)
+	if len(got) != 2 {
+		t.Fatalf("selected %d candidates, want 2", len(got))
+	}
+	if got[0].IP.String() != "104.18.1.1" || got[1].IP.String() != "104.18.1.2" {
+		t.Fatalf("selected candidates = %v", phase2SelectionIPs(got))
 	}
 }
 

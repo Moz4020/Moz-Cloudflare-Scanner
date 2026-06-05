@@ -2335,13 +2335,12 @@ func (m AppModel) viewScanWithConfig() string {
 	if maxRows < 3 {
 		maxRows = 3
 	}
-	rows := m.configResults
-	if len(rows) > maxRows {
-		rows = rows[len(rows)-maxRows:]
-	}
+	rows := visibleValidationRows(m.configResults, maxRows, m.configDone)
 
-	for i := len(rows) - 1; i >= 0; i-- {
-		r := rows[i]
+	renderValidationRow := func(r *xraytest.ValidationResult) {
+		if r == nil {
+			return
+		}
 		if r.Success {
 			sb.WriteString(styleGood.Render(validationRow(r, "working")) + "\n")
 		} else if isSkippedValidation(r) {
@@ -2355,6 +2354,15 @@ func (m AppModel) viewScanWithConfig() string {
 				errMsg = errMsg[:statusColWidth-1] + "…"
 			}
 			sb.WriteString(styleBad.Render(validationRow(r, errMsg)) + "\n")
+		}
+	}
+	if m.configDone {
+		for _, r := range rows {
+			renderValidationRow(r)
+		}
+	} else {
+		for i := len(rows) - 1; i >= 0; i-- {
+			renderValidationRow(rows[i])
 		}
 	}
 
@@ -2378,6 +2386,44 @@ func (m AppModel) viewScanWithConfig() string {
 	}
 
 	return sb.String()
+}
+
+func visibleValidationRows(results []*xraytest.ValidationResult, maxRows int, finished bool) []*xraytest.ValidationResult {
+	if maxRows <= 0 || len(results) == 0 {
+		return nil
+	}
+	if !finished {
+		if len(results) > maxRows {
+			return results[len(results)-maxRows:]
+		}
+		return results
+	}
+
+	rows := append([]*xraytest.ValidationResult(nil), results...)
+	sort.SliceStable(rows, func(i, j int) bool {
+		a, b := rows[i], rows[j]
+		if a == nil || b == nil {
+			return b == nil
+		}
+		if a.Success != b.Success {
+			return a.Success
+		}
+		if a.Success {
+			aLatency := validationLatencyRank(a.Latency)
+			bLatency := validationLatencyRank(b.Latency)
+			if aLatency != bLatency {
+				return aLatency < bLatency
+			}
+			if a.Throughput != b.Throughput {
+				return a.Throughput > b.Throughput
+			}
+		}
+		return formatEndpoint(a.IP, a.Port) < formatEndpoint(b.IP, b.Port)
+	})
+	if len(rows) > maxRows {
+		return rows[:maxRows]
+	}
+	return rows
 }
 
 func (m AppModel) configSuccessCount() int {
@@ -3465,13 +3511,18 @@ func selectPhase2Candidates(results []*result.Result, n int) []*result.Result {
 
 	selected := make([]*result.Result, 0, limit)
 	seen := make(map[*result.Result]struct{})
+	seenEndpoints := make(map[string]struct{})
 	usedRanges := make(map[string]struct{})
 
 	add := func(r *result.Result, allowRangeRepeat bool) bool {
-		if r == nil {
+		if r == nil || r.IP == nil {
 			return false
 		}
 		if _, ok := seen[r]; ok {
+			return false
+		}
+		endpoint := formatEndpoint(r.IP.String(), r.Port)
+		if _, ok := seenEndpoints[endpoint]; ok {
 			return false
 		}
 		key := phase2RangeKey(r.IP)
@@ -3481,6 +3532,7 @@ func selectPhase2Candidates(results []*result.Result, n int) []*result.Result {
 			}
 		}
 		seen[r] = struct{}{}
+		seenEndpoints[endpoint] = struct{}{}
 		if key != "" {
 			usedRanges[key] = struct{}{}
 		}
