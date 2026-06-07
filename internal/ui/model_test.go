@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"os"
@@ -13,7 +12,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/moz/moz-cloudflare-scanner/internal/prober"
 	"github.com/moz/moz-cloudflare-scanner/internal/result"
 	"github.com/moz/moz-cloudflare-scanner/internal/xraytest"
 )
@@ -230,16 +228,6 @@ func TestCopyWorkingIPsNoSuccesses(t *testing.T) {
 	}
 	if got := m.copyWorkingIPs(); got != "no working endpoints to copy" {
 		t.Fatalf("message = %q", got)
-	}
-}
-
-func TestFormatValidationSpeed(t *testing.T) {
-	if got := formatValidationSpeed(0); got != "n/a" {
-		t.Fatalf("zero throughput = %q, want n/a", got)
-	}
-	// 1.25 MiB/s ~= 10.5 Mbps
-	if got := formatValidationSpeed(1.25 * 1024 * 1024); got != "10.5 Mbps" {
-		t.Fatalf("throughput formatting = %q, want 10.5 Mbps", got)
 	}
 }
 
@@ -561,57 +549,35 @@ func TestSelectPhase2CandidatesDeduplicatesEndpoints(t *testing.T) {
 	}
 }
 
-func TestNeighborExpansionDoesNotBlockSingleWorkerScan(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ln.Close()
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			_ = conn.Close()
-		}
-	}()
-
-	_, port, err := net.SplitHostPort(ln.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	portNum, err := net.LookupPort("tcp", port)
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestGatherNeighborsRoundRobin(t *testing.T) {
 	_, loopbackNet, err := net.ParseCIDR("127.0.0.0/24")
 	if err != nil {
 		t.Fatal(err)
 	}
+	nets := []*net.IPNet{loopbackNet}
 
-	src := make(chan net.IP, 1)
-	src <- net.ParseIP("127.0.0.1")
-	close(src)
+	r1 := &result.Result{IP: net.ParseIP("127.0.0.10"), Latencies: []time.Duration{10 * time.Millisecond}, ProbeMode: "tcp"}
+	r2 := &result.Result{IP: net.ParseIP("127.0.0.20"), Latencies: []time.Duration{20 * time.Millisecond}, ProbeMode: "tcp"}
 
-	done := make(chan struct{})
-	go func() {
-		runConfigPortProbes(
-			context.Background(),
-			src,
-			[]int{portNum},
-			1,
-			prober.Config{Port: portNum, Mode: prober.ModeTCP, Tries: 1, Timeout: 20 * time.Millisecond},
-			func(*result.Result) {},
-			neighborScanOpts{enabled: true, nets: []*net.IPNet{loopbackNet}, radius: 16, perHit: 12, maxTotal: 12},
-		)
-		close(done)
-	}()
+	neighbors := gatherNeighbors([]*result.Result{r1, r2}, nets, 2, 4, 6)
 
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("neighbor expansion blocked the single worker scan")
+	if len(neighbors) != 6 {
+		t.Fatalf("expected 6 neighbors, got %d", len(neighbors))
+	}
+
+	expected := []string{
+		"127.0.0.11",
+		"127.0.0.21",
+		"127.0.0.9",
+		"127.0.0.19",
+		"127.0.0.12",
+		"127.0.0.22",
+	}
+
+	for i, ip := range neighbors {
+		if ip.String() != expected[i] {
+			t.Errorf("at index %d: expected %s, got %s", i, expected[i], ip.String())
+		}
 	}
 }
 

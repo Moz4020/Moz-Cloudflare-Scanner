@@ -19,7 +19,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/moz/moz-cloudflare-scanner/internal/banner"
 	"github.com/moz/moz-cloudflare-scanner/internal/result"
 	"github.com/moz/moz-cloudflare-scanner/internal/xraytest"
 )
@@ -171,11 +170,12 @@ type AppModel struct {
 	configPortFocus           int
 	configSelectedPorts       map[int]bool
 	// phase 1 state
-	configPhase1Results []*result.Result
-	configPhase1Done    bool
-	configPhase1Only    bool // true when scan stops after Phase 1 (no config URL)
-	configPhase1Total   int  // intended IP count for Phase 1 progress display
-	liveResultPath      string
+	configPhase1Results     []*result.Result
+	configPhase1Done        bool
+	configPhase1Only        bool // true when scan stops after Phase 1 (no config URL)
+	configPhase1Total       int  // intended IP count for Phase 1 progress display
+	configPhase1Neighboring bool // true when scanning neighboring IPs
+	liveResultPath          string
 
 	// shared
 	statusMsg string
@@ -298,6 +298,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ConfigPhase1ResultMsg:
 		m.configPhase1Results = append(m.configPhase1Results, msg.Result)
+		return m, nil
+
+	case ConfigPhase1TotalUpdateMsg:
+		m.configPhase1Total = msg.Total
+		return m, nil
+
+	case ConfigPhase1NeighboringMsg:
+		m.configPhase1Neighboring = msg.Neighboring
 		return m, nil
 
 	case ConfigPhase1ErrMsg:
@@ -474,9 +482,6 @@ func workingEndpoints(results []*xraytest.ValidationResult) []string {
 		if aLatency != bLatency {
 			return aLatency < bLatency
 		}
-		if a.Throughput != b.Throughput {
-			return a.Throughput > b.Throughput
-		}
 		aEndpoint := formatEndpoint(a.IP, a.Port)
 		bEndpoint := formatEndpoint(b.IP, b.Port)
 		return aEndpoint < bEndpoint
@@ -541,26 +546,22 @@ func endpointCandidateRow(r *result.Result, status string) string {
 }
 
 func validationHeader() string {
-	return fmt.Sprintf("  %-*s  %-*s  %9s  %9s  %-*s",
+	return fmt.Sprintf("  %-*s  %-*s  %9s  %-*s",
 		endpointColWidth, "ENDPOINT",
 		transportColWidth, "TYPE",
-		"SPEED",
 		"LATENCY",
 		statusColWidth, "STATUS",
 	)
 }
 
 func validationRow(r *xraytest.ValidationResult, status string) string {
-	speed := "-"
 	latency := "-"
 	if r.Success {
-		speed = formatValidationSpeed(r.Throughput)
 		latency = formatValidationLatency(r.Latency)
 	}
-	return fmt.Sprintf("  %-*s  %-*s  %9s  %9s  %-*s",
+	return fmt.Sprintf("  %-*s  %-*s  %9s  %-*s",
 		endpointColWidth, formatEndpoint(r.IP, r.Port),
 		transportColWidth, r.Transport,
-		speed,
 		latency,
 		statusColWidth, status,
 	)
@@ -595,16 +596,7 @@ func truncateMiddle(s string, max int) string {
 	return s[:left] + "..." + s[len(s)-right:]
 }
 
-func formatValidationSpeed(throughput float64) string {
-	if throughput <= 0 {
-		return "n/a"
-	}
-	mbps := throughput * 8 / 1_000_000
-	if mbps >= 100 {
-		return fmt.Sprintf("%.0f Mbps", mbps)
-	}
-	return fmt.Sprintf("%.1f Mbps", mbps)
-}
+
 
 func formatValidationLatency(latency time.Duration) string {
 	if latency <= 0 {
@@ -801,7 +793,7 @@ func gradientText(text string, frame int, palette []string) string {
 func (m AppModel) viewGenerateConfigs() string {
 	var sb strings.Builder
 
-	sb.WriteString(styleTitle.Render("\n  Generate V2Ray Configs\n"))
+	sb.WriteString("\n" + styleTitle.Render("  Generate V2Ray Configs") + "\n")
 	sb.WriteString(fmt.Sprintf("%s\n\n", styleSep.Render("  "+strings.Repeat("─", minInt(m.width-4, 76)))))
 
 	rowLabel := func(row int, text string) {
@@ -836,7 +828,7 @@ func (m AppModel) viewGenerateConfigs() string {
 	sb.WriteString(styleDim.Render("  Output  configs.txt next to the ips.txt file") + "\n\n")
 
 	if m.generatorCount > 0 {
-		sb.WriteString(styleGood.Render(fmt.Sprintf("  ✓ Generated %d v2rayN configs successfully\n", m.generatorCount)))
+		sb.WriteString(styleGood.Render(fmt.Sprintf("  ✓ Generated %d v2rayN configs successfully", m.generatorCount)) + "\n")
 		if m.generatorOutputPath != "" {
 			sb.WriteString(styleDim.Render("  "+m.generatorOutputPath) + "\n")
 		}
@@ -972,11 +964,18 @@ func generatedConfigRemark(prefix, fallback string, index int) string {
 
 func (m AppModel) viewAbout() string {
 	var sb strings.Builder
-	sb.WriteString(banner.Render(m.bannerFrame / 2))
+
 	sb.WriteRune('\n')
-	sb.WriteString(styleTitle.Render("  Moz Cloudflare Scanner\n"))
-	sb.WriteString(styleDim.Render(fmt.Sprintf("  version %s", m.version)))
+	for _, line := range mainMenuASCII {
+		sb.WriteString("  " + gradientText(line, m.bannerFrame/3, []string{
+			"#B066FF", "#8F7CFF", "#6C8DFF", "#4B9BFF", "#35B8FF",
+		}) + "\n")
+	}
+	sb.WriteString(styleDim.Render("  Cloudflare endpoint scanner for desktop and VPS"))
+	sb.WriteString("\n")
+	sb.WriteString(styleAccent.Render("  " + m.version))
 	sb.WriteString("\n\n")
+
 	sb.WriteString(styleNormal.Render("  Terminal toolkit for Windows desktops and Linux VPS hosts."))
 	sb.WriteRune('\n')
 
@@ -1100,7 +1099,7 @@ func (m AppModel) viewScanWithConfig() string {
 	if m.configScanning || m.configDone {
 		title = "Phase 2 — Xray Validation"
 	}
-	sb.WriteString(styleTitle.Render("\n  " + title + "\n"))
+	sb.WriteString("\n" + styleTitle.Render("  " + title) + "\n")
 	sb.WriteString(fmt.Sprintf("%s\n\n", styleSep.Render("  "+strings.Repeat("─", minInt(m.width-4, 70)))))
 
 	if !m.configScanning && !m.configDone {
@@ -1281,12 +1280,12 @@ func (m AppModel) viewScanWithConfig() string {
 			scanWave(m.bannerFrame+5, 32),
 		))
 	} else if success > 0 {
-		sb.WriteString(styleGood.Render("  Ready: copy working endpoints or import generated configs from the V2Ray generator.\n\n"))
+		sb.WriteString(styleGood.Render("  Ready: copy working endpoints or import generated configs from the V2Ray generator.") + "\n\n")
 	}
 
 	sb.WriteString(fmt.Sprintf("%s\n%s\n",
 		styleHeader.Render(validationHeader()),
-		styleSep.Render(tableSeparator(76)),
+		styleSep.Render(tableSeparator(62)),
 	))
 
 	// Results
@@ -1372,9 +1371,6 @@ func visibleValidationRows(results []*xraytest.ValidationResult, maxRows int, fi
 			bLatency := validationLatencyRank(b.Latency)
 			if aLatency != bLatency {
 				return aLatency < bLatency
-			}
-			if a.Throughput != b.Throughput {
-				return a.Throughput > b.Throughput
 			}
 		}
 		return formatEndpoint(a.IP, a.Port) < formatEndpoint(b.IP, b.Port)
@@ -1906,6 +1902,7 @@ func (m AppModel) launchPhase1FromOptional() (AppModel, tea.Cmd) {
 	m.configPhase1Only = !withConfig
 	m.configPhase1Results = nil
 	m.configPhase1Done = false
+	m.configPhase1Neighboring = false
 	m.page = PageConfigPhase1
 	m.scanStarted = time.Now()
 
@@ -2011,12 +2008,20 @@ type ConfigPhase1ErrMsg struct{ Err string }
 
 type ConfigPhase1DoneMsg struct{}
 
+type ConfigPhase1TotalUpdateMsg struct {
+	Total int
+}
+
+type ConfigPhase1NeighboringMsg struct {
+	Neighboring bool
+}
+
 func (m AppModel) viewConfigPhase1() string {
 	var sb strings.Builder
 
 	withConfig := strings.TrimSpace(m.configURL) != ""
 
-	sb.WriteString(styleTitle.Render("\n  Phase 1 — Candidate Scan\n"))
+	sb.WriteString("\n" + styleTitle.Render("  Phase 1 — Candidate Scan") + "\n")
 	sb.WriteString(fmt.Sprintf("%s\n\n", styleSep.Render("  "+strings.Repeat("─", minInt(m.width-4, 70)))))
 
 	icon := m.spinner.View()
@@ -2076,8 +2081,13 @@ func (m AppModel) viewConfigPhase1() string {
 	}
 	sb.WriteRune('\n')
 	if !m.configPhase1Done {
-		sb.WriteString(fmt.Sprintf("  %s  discovering reachable candidates  %s\n\n",
+		statusText := "discovering reachable candidates"
+		if m.configPhase1Neighboring {
+			statusText = "probing neighboring IPs of healthy hits"
+		}
+		sb.WriteString(fmt.Sprintf("  %s  %s  %s\n\n",
 			styleAccent.Render(scanPulse(m.bannerFrame)),
+			statusText,
 			scanWave(m.bannerFrame, 28),
 		))
 	}
@@ -2095,13 +2105,13 @@ func (m AppModel) viewConfigPhase1() string {
 			sb.WriteString(styleDim.Render("  Phase 1 only finds candidates; Phase 2 confirms xray works.\n\n"))
 		}
 	} else if m.configIPMode == configIPSourceFile {
-		sb.WriteString(styleNormal.Render("  Probing IPs and small CIDRs from ips.txt on the selected ports...\n\n"))
+		sb.WriteString(styleNormal.Render("  Probing IPs and small CIDRs from ips.txt on the selected ports...") + "\n\n")
 	} else if !withConfig {
-		sb.WriteString(styleNormal.Render("  Scanning random Cloudflare IPv4 IPs (standard HTTP probe)...\n"))
-		sb.WriteString(styleDim.Render("  healthy hits also explore nearby addresses in the same Cloudflare block\n\n"))
+		sb.WriteString(styleNormal.Render("  Scanning random Cloudflare IPv4 IPs (standard HTTP probe)...") + "\n")
+		sb.WriteString(styleDim.Render("  healthy hits also explore nearby addresses in the same Cloudflare block") + "\n\n")
 	} else {
-		sb.WriteString(styleNormal.Render("  Scanning Cloudflare IPs using your config reachability probe...\n"))
-		sb.WriteString(styleDim.Render("  Phase 1 only finds candidates; Phase 2 confirms xray works.\n\n"))
+		sb.WriteString(styleNormal.Render("  Scanning Cloudflare IPs using your config reachability probe...") + "\n")
+		sb.WriteString(styleDim.Render("  Phase 1 only finds candidates; Phase 2 confirms xray works.") + "\n\n")
 	}
 
 	if m.liveResultPath != "" {

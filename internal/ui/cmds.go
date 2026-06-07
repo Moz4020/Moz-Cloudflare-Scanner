@@ -69,7 +69,10 @@ func runConfigPhase1(opts configPhase1Options) {
 	}
 
 	var ipStream <-chan net.IP
-	neighbor := neighborScanOpts{}
+	neighborEnabled := false
+	var neighborNets []*net.IPNet
+	var neighborRadius, neighborPerHit, neighborMaxTotal int
+
 	if opts.sourceMode == configIPSourceFile {
 		ips, err := loadDefaultIPsFile()
 		if err != nil {
@@ -94,15 +97,52 @@ func runConfigPhase1(opts configPhase1Options) {
 			return
 		}
 		ipStream = src.Stream(ctx, opts.count)
-		neighbor = neighborScanOpts{
-			enabled:  true,
-			nets:     src.IPv4Nets(),
-			radius:   ipsrc.DefaultNeighborRadius,
-			perHit:   ipsrc.DefaultNeighborPerHit,
-			maxTotal: ipsrc.DefaultNeighborMaxTotal,
+		neighborEnabled = true
+		neighborNets = src.IPv4Nets()
+		neighborRadius = ipsrc.DefaultNeighborRadius
+		neighborPerHit = ipsrc.DefaultNeighborPerHit
+		neighborMaxTotal = ipsrc.DefaultNeighborMaxTotal
+	}
+
+	// We collect healthy results from the primary scan to use for neighbor expansion later
+	var healthyResults []*result.Result
+	var healthyMu sync.Mutex
+
+	primaryCallback := func(r *result.Result) {
+		callback(r)
+		if r.IsHealthy() {
+			healthyMu.Lock()
+			healthyResults = append(healthyResults, r)
+			healthyMu.Unlock()
 		}
 	}
-	runConfigPortProbes(ctx, ipStream, ports, opts.concurrency, probeCfg, callback, neighbor)
+
+	// Stage 1A: Primary Scan
+	runConfigPortProbes(ctx, ipStream, ports, opts.concurrency, probeCfg, primaryCallback)
+
+	// Stage 1B: Balanced Neighbor Scan (only if primary scan wasn't cancelled)
+	if neighborEnabled && len(healthyResults) > 0 && ctx.Err() == nil {
+		neighborIPs := gatherNeighbors(healthyResults, neighborNets, neighborRadius, neighborPerHit, neighborMaxTotal)
+		if len(neighborIPs) > 0 {
+			// Notify TUI that we are beginning neighbor scan
+			if prog != nil {
+				prog.Send(ConfigPhase1NeighboringMsg{Neighboring: true})
+				newTotal := opts.count*len(ports) + len(neighborIPs)*len(ports)
+				prog.Send(ConfigPhase1TotalUpdateMsg{Total: newTotal})
+			}
+
+			// Stream neighbor IPs
+			neighborStream := make(chan net.IP, len(neighborIPs))
+			for _, nip := range neighborIPs {
+				neighborStream <- nip
+			}
+			close(neighborStream)
+
+			// Probes on neighbors (which don't recursively expand neighbors since neighborEnabled is false here)
+			runConfigPortProbes(ctx, neighborStream, ports, opts.concurrency, probeCfg, callback)
+		}
+	}
+
 	if liveResultWriter != nil {
 		_ = liveResultWriter.flush()
 	}
@@ -132,33 +172,65 @@ type configProbeJob struct {
 	port int
 }
 
-type neighborScanOpts struct {
-	enabled  bool
-	nets     []*net.IPNet
-	radius   int
-	perHit   int
-	maxTotal int
+// gatherNeighbors gathers up to maxTotal unique neighbor IPs from healthy results,
+// using a round-robin approach to ensure a balanced spread across all healthy IPs.
+func gatherNeighbors(healthy []*result.Result, nets []*net.IPNet, radius, perHit, maxTotal int) []net.IP {
+	if len(healthy) == 0 || maxTotal <= 0 {
+		return nil
+	}
+
+	var neighborLists [][]net.IP
+	for _, hr := range healthy {
+		around := ipsrc.NeighborsAround(hr.IP, nets, radius, perHit)
+		if len(around) > 0 {
+			neighborLists = append(neighborLists, around)
+		}
+	}
+
+	if len(neighborLists) == 0 {
+		return nil
+	}
+
+	var neighbors []net.IP
+	seenIPs := make(map[string]struct{})
+
+	maxLen := 0
+	for _, list := range neighborLists {
+		if len(list) > maxLen {
+			maxLen = len(list)
+		}
+	}
+
+	ipCount := 0
+	for step := 0; step < maxLen; step++ {
+		for _, list := range neighborLists {
+			if step >= len(list) {
+				continue
+			}
+			nip := list[step]
+			nipStr := nip.String()
+			if _, ok := seenIPs[nipStr]; ok {
+				continue
+			}
+			seenIPs[nipStr] = struct{}{}
+			neighbors = append(neighbors, nip)
+			ipCount++
+			if ipCount >= maxTotal {
+				return neighbors
+			}
+		}
+	}
+
+	return neighbors
 }
 
-func runConfigPortProbes(ctx context.Context, ips <-chan net.IP, ports []int, concurrency int, base prober.Config, callback func(*result.Result), neighbor neighborScanOpts) {
+func runConfigPortProbes(ctx context.Context, ips <-chan net.IP, ports []int, concurrency int, base prober.Config, callback func(*result.Result)) {
 	if concurrency <= 0 {
 		concurrency = 50
-	}
-	if neighbor.enabled {
-		if neighbor.radius <= 0 {
-			neighbor.radius = ipsrc.DefaultNeighborRadius
-		}
-		if neighbor.perHit <= 0 {
-			neighbor.perHit = ipsrc.DefaultNeighborPerHit
-		}
-		if neighbor.maxTotal <= 0 {
-			neighbor.maxTotal = ipsrc.DefaultNeighborMaxTotal
-		}
 	}
 
 	jobs := make(chan configProbeJob, maxInt(concurrency*4, len(ports)*concurrency*2))
 	var pending int64
-	var neighborsQueued int64
 	seen := make(map[string]struct{})
 	var seenMu sync.Mutex
 
@@ -166,13 +238,7 @@ func runConfigPortProbes(ctx context.Context, ips <-chan net.IP, ports []int, co
 		return fmt.Sprintf("%s:%d", ip.String(), port)
 	}
 
-	forget := func(key string) {
-		seenMu.Lock()
-		delete(seen, key)
-		seenMu.Unlock()
-	}
-
-	submit := func(ip net.IP, port int, block bool) bool {
+	submit := func(ip net.IP, port int) bool {
 		key := jobKey(ip, port)
 		seenMu.Lock()
 		if _, ok := seen[key]; ok {
@@ -184,63 +250,18 @@ func runConfigPortProbes(ctx context.Context, ips <-chan net.IP, ports []int, co
 
 		atomic.AddInt64(&pending, 1)
 		job := configProbeJob{ip: ip, port: port}
-		if block {
-			select {
-			case <-ctx.Done():
-				atomic.AddInt64(&pending, -1)
-				forget(key)
-				return false
-			case jobs <- job:
-				return true
-			}
-		}
 		select {
 		case <-ctx.Done():
 			atomic.AddInt64(&pending, -1)
-			forget(key)
 			return false
 		case jobs <- job:
 			return true
-		default:
-			atomic.AddInt64(&pending, -1)
-			forget(key)
-			return false
 		}
 	}
 
 	enqueueIP := func(ip net.IP) {
 		for _, port := range ports {
-			submit(ip, port, true)
-		}
-	}
-
-	maybeEnqueueNeighbors := func(r *result.Result) {
-		if !neighbor.enabled || !r.IsHealthy() || len(neighbor.nets) == 0 {
-			return
-		}
-
-		remaining := neighbor.maxTotal - int(atomic.LoadInt64(&neighborsQueued))
-		if remaining <= 0 {
-			return
-		}
-		limit := neighbor.perHit
-		if limit > remaining {
-			limit = remaining
-		}
-
-		for _, nip := range ipsrc.NeighborsAround(r.IP, neighbor.nets, neighbor.radius, limit) {
-			if atomic.LoadInt64(&neighborsQueued) >= int64(neighbor.maxTotal) {
-				break
-			}
-			added := 0
-			for _, port := range ports {
-				if submit(nip, port, false) {
-					added++
-				}
-			}
-			if added > 0 {
-				atomic.AddInt64(&neighborsQueued, 1)
-			}
+			submit(ip, port)
 		}
 	}
 
@@ -255,7 +276,6 @@ func runConfigPortProbes(ctx context.Context, ips <-chan net.IP, ports []int, co
 					continue
 				}
 				r := prober.Probe(ctx, job.ip, base.WithPort(job.port))
-				maybeEnqueueNeighbors(r)
 				callback(r)
 				atomic.AddInt64(&pending, -1)
 			}
@@ -293,7 +313,7 @@ func defaultPhase1ProbeConfig(timeout time.Duration) prober.Config {
 		Tries:      3,
 		Timeout:    timeout,
 		SNI:        "speed.cloudflare.com",
-		SpeedBytes: 64 * 1024,
+		SpeedBytes: 0,
 	}
 }
 
