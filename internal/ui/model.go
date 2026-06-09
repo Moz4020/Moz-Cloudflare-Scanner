@@ -242,25 +242,41 @@ func NewApp(version string) AppModel {
 	cfgInput := textinput.New()
 	cfgInput.Placeholder = "vless:// or trojan:// share URL"
 	cfgInput.CharLimit = 2000
-	cfgInput.Width = 0 // 0 = no fixed width, grows with content
+	cfgInput.Width = 58
+	cfgInput.Prompt = "› "
+	cfgInput.PromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#F6821F")).Bold(true)
+	cfgInput.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#CCCCCC"))
+	cfgInput.PlaceholderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#555555"))
 	m.configInput = cfgInput
 
 	genInput := textinput.New()
 	genInput.Placeholder = "paste your working vless:// config"
 	genInput.CharLimit = 2000
-	genInput.Width = 0
+	genInput.Width = 58
+	genInput.Prompt = "› "
+	genInput.PromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#F6821F")).Bold(true)
+	genInput.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#CCCCCC"))
+	genInput.PlaceholderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#555555"))
 	m.generatorInput = genInput
 
 	genPrefixInput := textinput.New()
 	genPrefixInput.Placeholder = "e.g. Test-fast"
 	genPrefixInput.CharLimit = 80
 	genPrefixInput.Width = 34
+	genPrefixInput.Prompt = "› "
+	genPrefixInput.PromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#F6821F")).Bold(true)
+	genPrefixInput.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#CCCCCC"))
+	genPrefixInput.PlaceholderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#555555"))
 	m.generatorPrefixInput = genPrefixInput
 
 	cfgCustom := textinput.New()
 	cfgCustom.Placeholder = "enter value"
 	cfgCustom.CharLimit = 10
 	cfgCustom.Width = 12
+	cfgCustom.Prompt = "› "
+	cfgCustom.PromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#F6821F")).Bold(true)
+	cfgCustom.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#CCCCCC"))
+	cfgCustom.PlaceholderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#555555"))
 	m.configCustomInput = cfgCustom
 
 	return m
@@ -897,9 +913,9 @@ func (m AppModel) viewGenerateConfigs() string {
 	rowLabel(0, "  Config ")
 	sb.WriteString(m.generatorInput.View() + "\n")
 	if summary := parsedConfigSummary(m.generatorInput.Value()); summary != "" {
-		sb.WriteString(styleDim.Render("         "+summary) + "\n\n")
+		sb.WriteString(styleDim.Render("           "+summary) + "\n\n")
 	} else {
-		sb.WriteString(styleDim.Render("         paste one working VLESS config; endpoints come from ips.txt") + "\n\n")
+		sb.WriteString(styleDim.Render("           paste one working VLESS config; endpoints come from ips.txt") + "\n\n")
 	}
 
 	rowLabel(1, "  Prefix ")
@@ -908,22 +924,26 @@ func (m AppModel) viewGenerateConfigs() string {
 	if prefixPreview == "" {
 		prefixPreview = "Main-Moz"
 	}
-	sb.WriteString(styleDim.Render(fmt.Sprintf("         generated remarks look like: %s 1, %s 2, ...", prefixPreview, prefixPreview)) + "\n\n")
+	sb.WriteString(styleDim.Render(fmt.Sprintf("           generated remarks look like: %s 1, %s 2, ...", prefixPreview, prefixPreview)) + "\n\n")
 
 	rowLabel(2, "  Create ")
-	sb.WriteString(styleNormal.Render("configs.txt") + "\n")
-	sb.WriteString(styleDim.Render("         press Enter here to generate one v2rayN import URL per endpoint") + "\n\n")
+	if m.generatorRow == 2 {
+		sb.WriteString(styleAccent.Render("› ") + styleNormal.Render("configs.txt") + "\n")
+	} else {
+		sb.WriteString(styleDim.Render("› configs.txt") + "\n")
+	}
+	sb.WriteString(styleDim.Render("           press Enter here to generate one v2rayN import URL per endpoint") + "\n\n")
+
+	gridWidth := minInt(m.width-4, 76)
+	if m.generatorCount > 0 {
+		path := truncateMiddle(m.generatorOutputPath, gridWidth-12)
+		sb.WriteString(styleGood.Render("  ✓ Success! ") + styleNormal.Render(fmt.Sprintf("Generated %d v2rayN configs.", m.generatorCount)) + "\n")
+		sb.WriteString(styleDim.Render("    File: ") + styleAccent.Render(path) + "\n\n")
+	}
 
 	sb.WriteString(styleDim.Render("  Input   ips.txt next to the exe or current run folder; supports IP or IP:port") + "\n")
 	sb.WriteString(styleDim.Render("  Output  configs.txt next to the ips.txt file") + "\n\n")
 
-	if m.generatorCount > 0 {
-		sb.WriteString(styleGood.Render(fmt.Sprintf("  ✓ Generated %d v2rayN configs successfully", m.generatorCount)) + "\n")
-		if m.generatorOutputPath != "" {
-			sb.WriteString(styleDim.Render("  "+m.generatorOutputPath) + "\n")
-		}
-		sb.WriteRune('\n')
-	}
 	if m.statusMsg != "" {
 		sb.WriteString(styleWarn.Render("  "+m.statusMsg) + "\n\n")
 	}
