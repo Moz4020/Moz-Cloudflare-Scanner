@@ -74,6 +74,17 @@ var (
 
 	styleSep = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#333333"))
+
+	styleColEndpoint = lipgloss.NewStyle().Foreground(lipgloss.Color("#E0E0E0"))
+	styleColLoss0    = lipgloss.NewStyle().Foreground(lipgloss.Color("#555555"))
+	styleColLossBad  = lipgloss.NewStyle().Foreground(lipgloss.Color("#E74C3C")).Bold(true)
+
+	styleColLatencyFast = lipgloss.NewStyle().Foreground(lipgloss.Color("#00E676")).Bold(true)
+	styleColLatencyMid  = lipgloss.NewStyle().Foreground(lipgloss.Color("#F39C12"))
+	styleColLatencySlow = lipgloss.NewStyle().Foreground(lipgloss.Color("#E74C3C"))
+
+	styleColColo    = lipgloss.NewStyle().Foreground(lipgloss.Color("#9D4EDD")).Bold(true)
+	styleColBracket = lipgloss.NewStyle().Foreground(lipgloss.Color("#444466"))
 )
 
 type quickPreset struct {
@@ -534,14 +545,56 @@ func endpointHeader(statusLabel string) string {
 func endpointCandidateRow(r *result.Result, status string) string {
 	colo := r.Colo
 	if colo == "" {
-		colo = "-"
+		colo = "---"
 	}
-	return fmt.Sprintf("  %-*s  %6.1f%%  %8s  %-6s  %-*s",
-		endpointColWidth, formatEndpoint(r.IP.String(), r.Port),
-		r.Loss(),
-		formatDurationShort(r.Avg()),
-		colo,
-		statusColWidth, status,
+
+	endpointStr := formatEndpoint(r.IP.String(), r.Port)
+	endpointFormatted := styleColEndpoint.Render(fmt.Sprintf("%-*s", endpointColWidth, endpointStr))
+
+	lossStr := fmt.Sprintf("%6.1f%%", r.Loss())
+	var lossFormatted string
+	if r.Loss() == 0 {
+		lossFormatted = styleColLoss0.Render(lossStr)
+	} else {
+		lossFormatted = styleColLossBad.Render(lossStr)
+	}
+
+	avg := r.Avg()
+	latencyStr := fmt.Sprintf("%8s", formatDurationShort(avg))
+	var latencyFormatted string
+	if avg <= 0 {
+		latencyFormatted = styleDim.Render(latencyStr)
+	} else if avg < 150*time.Millisecond {
+		latencyFormatted = styleColLatencyFast.Render(latencyStr)
+	} else if avg < 300*time.Millisecond {
+		latencyFormatted = styleColLatencyMid.Render(latencyStr)
+	} else {
+		latencyFormatted = styleColLatencySlow.Render(latencyStr)
+	}
+
+	coloFormatted := fmt.Sprintf("%s%s%s",
+		styleColBracket.Render("["),
+		styleColColo.Render(fmt.Sprintf("%-3s", colo)),
+		styleColBracket.Render("]"),
+	)
+
+	var rawStatus string
+	var statusStyle lipgloss.Style
+	if !r.IsHealthy() {
+		rawStatus = "✗ failed"
+		statusStyle = styleColLossBad
+	} else {
+		rawStatus = "✓ candidate"
+		statusStyle = styleColLatencyFast
+	}
+	statusFormatted := statusStyle.Render(fmt.Sprintf("%-*s", statusColWidth, rawStatus))
+
+	return fmt.Sprintf("  %s  %s  %s  %s  %s",
+		endpointFormatted,
+		lossFormatted,
+		latencyFormatted,
+		coloFormatted,
+		statusFormatted,
 	)
 }
 
@@ -555,15 +608,52 @@ func validationHeader() string {
 }
 
 func validationRow(r *xraytest.ValidationResult, status string) string {
-	latency := "-"
-	if r.Success {
-		latency = formatValidationLatency(r.Latency)
+	endpointStr := formatEndpoint(r.IP, r.Port)
+	endpointFormatted := styleColEndpoint.Render(fmt.Sprintf("%-*s", endpointColWidth, endpointStr))
+
+	typeStr := fmt.Sprintf("%-*s", transportColWidth, r.Transport)
+	var typeFormatted string
+	switch strings.ToLower(r.Transport) {
+	case "ws":
+		typeFormatted = lipgloss.NewStyle().Foreground(lipgloss.Color("#00B4D8")).Bold(true).Render(typeStr)
+	case "grpc":
+		typeFormatted = lipgloss.NewStyle().Foreground(lipgloss.Color("#9D4EDD")).Bold(true).Render(typeStr)
+	default:
+		typeFormatted = lipgloss.NewStyle().Foreground(lipgloss.Color("#F6821F")).Bold(true).Render(typeStr)
 	}
-	return fmt.Sprintf("  %-*s  %-*s  %9s  %-*s",
-		endpointColWidth, formatEndpoint(r.IP, r.Port),
-		transportColWidth, r.Transport,
-		latency,
-		statusColWidth, status,
+
+	latencyStr := "-"
+	if r.Success {
+		latencyStr = formatValidationLatency(r.Latency)
+	}
+	latencyPadded := fmt.Sprintf("%9s", latencyStr)
+	var latencyFormatted string
+	if !r.Success {
+		latencyFormatted = styleDim.Render(latencyPadded)
+	} else if r.Latency < 200*time.Millisecond {
+		latencyFormatted = styleColLatencyFast.Render(latencyPadded)
+	} else if r.Latency < 400*time.Millisecond {
+		latencyFormatted = styleColLatencyMid.Render(latencyPadded)
+	} else {
+		latencyFormatted = styleColLatencySlow.Render(latencyPadded)
+	}
+
+	var rawStatus string
+	var statusStyle lipgloss.Style
+	if r.Success {
+		rawStatus = "✓ working"
+		statusStyle = styleColLatencyFast
+	} else {
+		rawStatus = "✗ failed"
+		statusStyle = styleColLossBad
+	}
+	statusFormatted := statusStyle.Render(fmt.Sprintf("%-*s", statusColWidth, rawStatus))
+
+	return fmt.Sprintf("  %s  %s  %s  %s",
+		endpointFormatted,
+		typeFormatted,
+		latencyFormatted,
+		statusFormatted,
 	)
 }
 
@@ -1237,45 +1327,47 @@ func (m AppModel) viewScanWithConfig() string {
 		icon = styleGood.Render("✓")
 	}
 
-	// Progress bar
-	pct := 0.0
-	if total > 0 {
-		pct = float64(done) / float64(total) * 100
-	}
-	bw := 22
-	filled := int(pct / 100 * float64(bw))
-	progBar := "[" + styleAccent.Render(strings.Repeat("█", filled)) +
-		styleDim.Render(strings.Repeat("░", bw-filled)) + "]" +
-		fmt.Sprintf(" %.0f%%", pct)
-
-	skippedPart := ""
-	if skipped > 0 {
-		skippedPart = fmt.Sprintf("  skipped: %s", styleDim.Render(fmt.Sprintf("%d", skipped)))
-	}
-	sb.WriteString(fmt.Sprintf("  %s  tested: %s  working: %s  failed: %s%s  success: %s  %s\n",
-		icon,
-		styleAccent.Render(fmt.Sprintf("%d/%d", done, total)),
-		styleGood.Render(fmt.Sprintf("%d", success)),
-		styleBad.Render(fmt.Sprintf("%d", failed)),
-		skippedPart,
-		styleGood.Render(formatPercent(successRate)),
-		progBar,
-	))
+	elapsedStr := "-"
+	etaStr := "-"
+	scanRateStr := "-"
 	if done > 0 {
 		elapsed := time.Since(m.scanStarted)
 		if m.configDone && m.scanDuration > 0 {
 			elapsed = m.scanDuration
 		}
 		rate := float64(done) / elapsed.Seconds()
-		sb.WriteString(styleDim.Render(fmt.Sprintf("  elapsed: %s  rate: %s  eta: %s\n",
-			formatDurationShort(elapsed),
-			formatRate(rate),
-			formatETA(done, total, rate, m.configDone),
-		)))
+		elapsedStr = formatDurationShort(elapsed)
+		scanRateStr = formatRate(rate)
+		etaStr = formatETA(done, total, rate, m.configDone)
 	}
-	sb.WriteRune('\n')
+
+	gridWidth := minInt(m.width-4, 76)
+	if gridWidth < 30 {
+		gridWidth = 30
+	}
+
+	// Render Phase 2 Metadata Grid
+	sb.WriteString(renderPhase2MetadataGrid(
+		gridWidth,
+		done,
+		total,
+		success,
+		failed,
+		skipped,
+		successRate,
+		elapsedStr,
+		etaStr,
+		scanRateStr,
+	) + "\n\n")
+
+	// Progress Bar
+	if total > 0 {
+		sb.WriteString(renderProgressBar(gridWidth, done, total) + "\n\n")
+	}
+
 	if !m.configDone {
-		sb.WriteString(fmt.Sprintf("  %s  xray validating candidates  %s\n\n",
+		sb.WriteString(fmt.Sprintf("  %s %s  xray validating candidates  %s\n\n",
+			icon,
 			styleAccent.Render(scanPulse(m.bannerFrame)),
 			scanWave(m.bannerFrame+5, 32),
 		))
@@ -1299,20 +1391,22 @@ func (m AppModel) viewScanWithConfig() string {
 		if r == nil {
 			return
 		}
+		status := "failed"
 		if r.Success {
-			sb.WriteString(styleGood.Render(validationRow(r, "working")) + "\n")
+			status = "working"
 		} else if isSkippedValidation(r) {
-			sb.WriteString(styleDim.Render(validationRow(r, "skipped")) + "\n")
+			status = "skipped"
 		} else {
-			errMsg := r.Error
-			if errMsg == "" {
-				errMsg = "failed"
+			status = r.Error
+			if status == "" {
+				status = "failed"
 			}
-			if len(errMsg) > statusColWidth {
-				errMsg = errMsg[:statusColWidth-1] + "…"
-			}
-			sb.WriteString(styleBad.Render(validationRow(r, errMsg)) + "\n")
 		}
+
+		if len(status) > statusColWidth {
+			status = status[:statusColWidth-1] + "…"
+		}
+		sb.WriteString(validationRow(r, status) + "\n")
 	}
 	if m.configDone {
 		for _, r := range rows {
@@ -2037,55 +2131,65 @@ func (m AppModel) viewConfigPhase1() string {
 	}
 
 	tested := len(m.configPhase1Results)
-	targetStr := fmt.Sprintf("%d", m.configPhase1Total)
-	countLabel := "candidates"
-	if !withConfig {
-		countLabel = "healthy"
-	}
-	source := "Random Cloudflare"
+	source := "Cloudflare IP Ranges"
 	if m.configIPMode == configIPSourceFile {
 		source = "ips.txt"
 	}
-	probe := "http"
+	probe := "Standard HTTP"
 	if withConfig {
-		probe = "config aware"
+		probe = "VLESS Config"
 	}
 	rate := 0.0
 	if tested > 0 {
 		rate = float64(healthy) / float64(tested) * 100
 	}
-	sb.WriteString(fmt.Sprintf("  %s  source %s   probe %s   ports %s\n",
-		icon,
-		styleNormal.Render(source),
-		styleNormal.Render(probe),
-		styleDim.Render(formatPorts(m.resolveConfigPorts())),
-	))
-	sb.WriteString(fmt.Sprintf("     tested %s   %s %s   target %s   hit-rate %s\n",
-		styleAccent.Render(fmt.Sprintf("%d", tested)),
-		countLabel,
-		styleGood.Render(fmt.Sprintf("%d", healthy)),
-		styleDim.Render(targetStr),
-		styleGood.Render(formatPercent(rate)),
-	))
+
+	elapsedStr := "-"
+	etaStr := "-"
+	scanRateStr := "-"
 	if tested > 0 {
 		elapsed := time.Since(m.scanStarted)
 		if m.configPhase1Done && m.scanDuration > 0 {
 			elapsed = m.scanDuration
 		}
 		scanRate := float64(tested) / elapsed.Seconds()
-		sb.WriteString(styleDim.Render(fmt.Sprintf("     elapsed %s   rate %s   eta %s\n",
-			formatDurationShort(elapsed),
-			formatRate(scanRate),
-			formatETA(tested, m.configPhase1Total, scanRate, m.configPhase1Done),
-		)))
+		elapsedStr = formatDurationShort(elapsed)
+		scanRateStr = formatRate(scanRate)
+		etaStr = formatETA(tested, m.configPhase1Total, scanRate, m.configPhase1Done)
 	}
-	sb.WriteRune('\n')
+
+	gridWidth := minInt(m.width-4, 76)
+	if gridWidth < 30 {
+		gridWidth = 30
+	}
+
+	// Render Phase 1 Metadata Grid
+	sb.WriteString(renderMetadataGrid(
+		gridWidth,
+		source,
+		probe,
+		formatPorts(m.resolveConfigPorts()),
+		tested,
+		healthy,
+		m.configPhase1Total,
+		rate,
+		elapsedStr,
+		etaStr,
+		scanRateStr,
+	) + "\n\n")
+
+	// Progress Bar
+	if m.configPhase1Total > 0 {
+		sb.WriteString(renderProgressBar(gridWidth, tested, m.configPhase1Total) + "\n\n")
+	}
+
 	if !m.configPhase1Done {
 		statusText := "discovering reachable candidates"
 		if m.configPhase1Neighboring {
 			statusText = "probing neighboring IPs of healthy hits"
 		}
-		sb.WriteString(fmt.Sprintf("  %s  %s  %s\n\n",
+		sb.WriteString(fmt.Sprintf("  %s %s  %s  %s\n\n",
+			icon,
 			styleAccent.Render(scanPulse(m.bannerFrame)),
 			statusText,
 			scanWave(m.bannerFrame, 28),
@@ -2135,12 +2239,10 @@ func (m AppModel) viewConfigPhase1() string {
 			if withConfig {
 				status = "candidate"
 			}
-			lineStyle := styleGood
 			if !r.IsHealthy() {
 				status = "failed"
-				lineStyle = styleBad
 			}
-			sb.WriteString(lineStyle.Render(endpointCandidateRow(r, status)) + "\n")
+			sb.WriteString(endpointCandidateRow(r, status) + "\n")
 		}
 		sb.WriteRune('\n')
 	}
@@ -2551,4 +2653,120 @@ func uniquePhase2Candidates(rows []*result.Result) []*result.Result {
 		out = append(out, r)
 	}
 	return out
+}
+
+func renderProgressBar(width int, current, total int) string {
+	if total <= 0 {
+		return ""
+	}
+	pct := float64(current) / float64(total)
+	if pct > 1.0 {
+		pct = 1.0
+	}
+	if pct < 0.0 {
+		pct = 0.0
+	}
+
+	barWidth := width - 9 // leave space for percentage text
+	if barWidth < 10 {
+		barWidth = 10
+	}
+
+	filledWidth := int(pct * float64(barWidth))
+	emptyWidth := barWidth - filledWidth
+
+	styleBarFilled := lipgloss.NewStyle().Foreground(lipgloss.Color("#F6821F"))
+	styleBarEmpty := lipgloss.NewStyle().Foreground(lipgloss.Color("#222233"))
+	stylePct := lipgloss.NewStyle().Foreground(lipgloss.Color("#F6821F")).Bold(true)
+
+	filled := strings.Repeat("█", filledWidth)
+	empty := strings.Repeat("░", emptyWidth)
+
+	return fmt.Sprintf("  %s%s  %s",
+		styleBarFilled.Render(filled),
+		styleBarEmpty.Render(empty),
+		stylePct.Render(fmt.Sprintf("%5.1f%%", pct*100)),
+	)
+}
+
+func renderMetadataGrid(width int, source, probe, ports string, tested, healthy, target int, rate float64, elapsed, eta string, scanRate string) string {
+	col1 := fmt.Sprintf(
+		"  %s %s\n  %s %s\n  %s %s",
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("Source:"), styleNormal.Render(source),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("Probe: "), styleNormal.Render(probe),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("Ports: "), styleDim.Render(ports),
+	)
+
+	col2 := fmt.Sprintf(
+		"  %s %s\n  %s %s\n  %s %s",
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("Tested:  "), styleAccent.Render(fmt.Sprintf("%d", tested)),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("Healthy: "), styleGood.Render(fmt.Sprintf("%d", healthy)),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("Target:  "), styleDim.Render(fmt.Sprintf("%d", target)),
+	)
+
+	col3 := fmt.Sprintf(
+		"  %s %s\n  %s %s\n  %s %s",
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("Speed:   "), styleAccent.Render(scanRate),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("Hit Rate:"), styleGood.Render(fmt.Sprintf("%.1f%%", rate)),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("Time:    "), styleDim.Render(fmt.Sprintf("%s / %s", elapsed, eta)),
+	)
+
+	styleCol := lipgloss.NewStyle().Width(width / 3).Align(lipgloss.Left)
+
+	c1Rendered := styleCol.Render(col1)
+	c2Rendered := styleCol.Render(col2)
+	c3Rendered := styleCol.Render(col3)
+
+	grid := lipgloss.JoinHorizontal(lipgloss.Top, c1Rendered, c2Rendered, c3Rendered)
+
+	borderStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#333344")).
+		Padding(1, 0, 1, 0).
+		Width(width - 2)
+
+	return borderStyle.Render(grid)
+}
+
+func renderPhase2MetadataGrid(width int, done, total, success, failed, skipped int, successRate float64, elapsed, eta string, scanRate string) string {
+	skippedStr := "-"
+	if skipped > 0 {
+		skippedStr = fmt.Sprintf("%d", skipped)
+	}
+
+	col1 := fmt.Sprintf(
+		"  %s %s\n  %s %s\n  %s %s",
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("Tested: "), styleAccent.Render(fmt.Sprintf("%d / %d", done, total)),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("Success:"), styleGood.Render(fmt.Sprintf("%d", success)),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("Failed: "), styleBad.Render(fmt.Sprintf("%d", failed)),
+	)
+
+	col2 := fmt.Sprintf(
+		"  %s %s\n  %s %s\n  %s %s",
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("Rate:   "), styleAccent.Render(scanRate),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("Success:"), styleGood.Render(fmt.Sprintf("%.1f%%", successRate)),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("Skipped:"), styleDim.Render(skippedStr),
+	)
+
+	col3 := fmt.Sprintf(
+		"\n  %s %s\n  %s %s",
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("Elapsed:"), styleDim.Render(elapsed),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("ETA:    "), styleDim.Render(eta),
+	)
+
+	styleCol := lipgloss.NewStyle().Width(width / 3).Align(lipgloss.Left)
+
+	c1Rendered := styleCol.Render(col1)
+	c2Rendered := styleCol.Render(col2)
+	c3Rendered := styleCol.Render(col3)
+
+	grid := lipgloss.JoinHorizontal(lipgloss.Top, c1Rendered, c2Rendered, c3Rendered)
+
+	borderStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#333344")).
+		Padding(1, 0, 1, 0).
+		Width(width - 2)
+
+	return borderStyle.Render(grid)
 }
