@@ -10,7 +10,7 @@ Recommended release asset:
 
 ```text
 moz-cloudflare-scanner-windows-amd64.zip
-moz-cloudflare-scanner-linux-amd64-0.1.2-Beta.tar.gz
+moz-cloudflare-scanner-linux-amd64-0.1.2.tar.gz
 ```
 
 Extract it, then run:
@@ -22,7 +22,7 @@ Extract it, then run:
 Linux:
 
 ```bash
-tar -xzf moz-cloudflare-scanner-linux-amd64-0.1.2-Beta.tar.gz
+tar -xzf moz-cloudflare-scanner-linux-amd64-0.1.2.tar.gz
 chmod +x moz-cloudflare-scanner-linux-amd64
 ./moz-cloudflare-scanner-linux-amd64
 ```
@@ -159,7 +159,7 @@ bash release-linux.sh
 The release tarball is written to:
 
 ```text
-dist/moz-cloudflare-scanner-linux-amd64-0.1.2-Beta.tar.gz
+dist/moz-cloudflare-scanner-linux-amd64-0.1.2.tar.gz
 ```
 
 ## Run on an Ubuntu 24.04 VPS
@@ -195,7 +195,7 @@ If you use the release tarball, Go is not required on the VPS:
 ```bash
 sudo apt update
 sudo apt install -y ca-certificates tar
-tar -xzf moz-cloudflare-scanner-linux-amd64-0.1.2-Beta.tar.gz
+tar -xzf moz-cloudflare-scanner-linux-amd64-0.1.2.tar.gz
 chmod +x moz-cloudflare-scanner-linux-amd64
 ./moz-cloudflare-scanner-linux-amd64
 ```

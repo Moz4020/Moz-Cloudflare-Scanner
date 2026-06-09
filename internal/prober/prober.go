@@ -165,6 +165,7 @@ func probeTCP(ctx context.Context, ip net.IP, port int, timeout time.Duration) t
 		return 0
 	}
 	lat := time.Since(start)
+	setLingerZero(conn)
 	conn.Close()
 	return lat
 }
@@ -191,6 +192,7 @@ func probeTLS(ctx context.Context, ip net.IP, port int, sni string, timeout time
 		return 0, false
 	}
 	lat := time.Since(start)
+	setLingerZero(conn)
 	conn.Close()
 	return lat, true
 }
@@ -208,7 +210,11 @@ func probeHTTP(ctx context.Context, ip net.IP, port int, sni string, timeout tim
 	// phase impossible and producing false-positive packet loss.
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			return (&net.Dialer{Timeout: timeout / 4}).DialContext(ctx, network, addr)
+			conn, err := (&net.Dialer{Timeout: timeout / 4}).DialContext(ctx, network, addr)
+			if err == nil {
+				setLingerZero(conn)
+			}
+			return conn, err
 		},
 		TLSClientConfig: &tls.Config{
 			ServerName:         sni,
@@ -296,6 +302,7 @@ func probeWebSocket(ctx context.Context, ip net.IP, port int, sni, host, path st
 	if err != nil {
 		return false
 	}
+	setLingerZero(conn)
 	defer conn.Close()
 
 	tlsConn := tls.Client(conn, &tls.Config{
@@ -370,7 +377,11 @@ func probeDownload(ctx context.Context, ip net.IP, port int, timeout time.Durati
 	addr := fmt.Sprintf("%s:%d", ip.String(), port)
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			return (&net.Dialer{Timeout: timeout / 4}).DialContext(ctx, network, addr)
+			conn, err := (&net.Dialer{Timeout: timeout / 4}).DialContext(ctx, network, addr)
+			if err == nil {
+				setLingerZero(conn)
+			}
+			return conn, err
 		},
 		TLSClientConfig: &tls.Config{
 			ServerName: "speed.cloudflare.com",
@@ -435,4 +446,16 @@ func parseColoRay(ray string) string {
 		return ""
 	}
 	return strings.ToUpper(colo[:3])
+}
+
+func setLingerZero(conn net.Conn) {
+	if conn == nil {
+		return
+	}
+	if tlsConn, ok := conn.(*tls.Conn); ok {
+		conn = tlsConn.NetConn()
+	}
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		_ = tcpConn.SetLinger(0)
+	}
 }

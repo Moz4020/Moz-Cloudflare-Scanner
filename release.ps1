@@ -2,7 +2,7 @@ $ErrorActionPreference = "Stop"
 
 & "$PSScriptRoot\build.ps1"
 
-$Version = "0.1.2 Beta"
+$Version = "0.1.2"
 $VersionFileFriendly = $Version -replace " ", "-"
 $Dist = Join-Path $PSScriptRoot "dist"
 $PackageDir = Join-Path $Dist "release-package"
