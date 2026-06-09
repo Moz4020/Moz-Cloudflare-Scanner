@@ -1213,13 +1213,24 @@ func (m AppModel) viewScanWithConfig() string {
 	sb.WriteString(fmt.Sprintf("%s\n\n", styleSep.Render("  "+strings.Repeat("─", minInt(m.width-4, 70)))))
 
 	if !m.configScanning && !m.configDone {
-		// helper: render a preset pill row
-		renderPills := func(labels []string, selected int) {
+		// helper: render a preset pill row with content-aware selection highlights
+		renderPills := func(row int, labels []string, selected int) {
+			isRowFocused := (m.configSetupRow == row)
 			for i, label := range labels {
 				if i == selected {
-					sb.WriteString(styleSelected.Render(" " + label + " "))
+					if isRowFocused {
+						// Active row focus: white text on custom orange background
+						sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Background(lipgloss.Color("#F6821F")).Render(" " + label + " "))
+					} else {
+						// Inactive row selection: simple orange bold text (no background block)
+						sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F6821F")).Render("  " + label + "  "))
+					}
 				} else {
-					sb.WriteString(styleNormal.Render("  " + label + "  "))
+					if isRowFocused {
+						sb.WriteString(styleNormal.Render("  " + label + "  "))
+					} else {
+						sb.WriteString(styleDim.Render("  " + label + "  "))
+					}
 				}
 				if i < len(labels)-1 {
 					sb.WriteString(styleDim.Render("│"))
@@ -1227,13 +1238,14 @@ func (m AppModel) viewScanWithConfig() string {
 			}
 		}
 
-		rowLabel := func(row int, text string) {
+		rowLabel := func(row int, label string) {
 			if m.configSetupRow == row {
-				sb.WriteString(styleAccent.Render(text))
+				sb.WriteString(styleAccent.Render(fmt.Sprintf("  ┃  %-7s  ", label)))
 			} else {
-				sb.WriteString(styleDim.Render(text))
+				sb.WriteString(styleDim.Render(fmt.Sprintf("  │  %-7s  ", label)))
 			}
 		}
+
 		renderMultiPorts := func() {
 			enabled := m.selectedPortSet()
 			for i, choice := range configPortChoices {
@@ -1244,11 +1256,19 @@ func (m AppModel) viewScanWithConfig() string {
 					label = "  " + label
 				}
 				if i == m.configPortFocus && m.configSetupRow == 4 {
-					sb.WriteString(styleSelected.Render(" " + label + " "))
+					sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Background(lipgloss.Color("#F6821F")).Render(" " + label + " "))
 				} else if enabled[choice.port] {
-					sb.WriteString(styleGood.Render(" " + label + " "))
+					if m.configSetupRow == 4 {
+						sb.WriteString(styleGood.Render(" " + label + " "))
+					} else {
+						sb.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#27AE60")).Render(" " + label + " "))
+					}
 				} else {
-					sb.WriteString(styleNormal.Render(" " + label + " "))
+					if m.configSetupRow == 4 {
+						sb.WriteString(styleNormal.Render(" " + label + " "))
+					} else {
+						sb.WriteString(styleDim.Render(" " + label + " "))
+					}
 				}
 				if i < len(configPortChoices)-1 {
 					sb.WriteString(styleDim.Render("│"))
@@ -1257,63 +1277,58 @@ func (m AppModel) viewScanWithConfig() string {
 		}
 
 		// Row 0: Source
-		rowLabel(0, "  Source ")
-		sb.WriteString(" ")
-		renderPills(configIPModeLabels, m.configIPMode)
+		rowLabel(0, "Source")
+		renderPills(0, configIPModeLabels, m.configIPMode)
 		sb.WriteString("\n")
 		if m.configIPMode == configIPSourceDefault {
-			sb.WriteString(styleDim.Render("            random sample from official Cloudflare IPv4 ranges") + "\n\n")
+			sb.WriteString(styleDim.Render("  │          random sample from official Cloudflare IPv4 ranges") + "\n\n")
 		} else {
-			sb.WriteString(styleDim.Render("            exact IPs and small IPv4 CIDRs from ips.txt") + "\n\n")
+			sb.WriteString(styleDim.Render("  │          exact IPs and small IPv4 CIDRs from ips.txt") + "\n\n")
 		}
 
 		// Row 1: Count
-		rowLabel(1, "  Count  ")
-		sb.WriteString(" ")
-		renderPills(configCountLabels, m.configCountIdx)
+		rowLabel(1, "Count")
+		renderPills(1, configCountLabels, m.configCountIdx)
 		sb.WriteString("\n")
 		if m.configCustomMode && m.configCustomRow == 1 {
-			sb.WriteString(styleAccent.Render("            custom count: ") + m.configCustomInput.View() + "\n\n")
+			sb.WriteString(styleAccent.Render("  │          custom count: ") + m.configCustomInput.View() + "\n\n")
 		} else if configCountValues[m.configCountIdx] == 0 && m.configCountCustom != "" {
-			sb.WriteString(styleDim.Render(fmt.Sprintf("            IPs to probe in Phase 1  (custom: %s)", m.configCountCustom)) + "\n\n")
+			sb.WriteString(styleDim.Render(fmt.Sprintf("  │          IPs to probe in Phase 1  (custom: %s)", m.configCountCustom)) + "\n\n")
 		} else if m.configIPMode == configIPSourceFile {
-			sb.WriteString(styleDim.Render("            ignored when Source is ips.txt — all IPs/CIDRs in ips.txt are used") + "\n\n")
+			sb.WriteString(styleDim.Render("  │          ignored when Source is ips.txt — all IPs/CIDRs in ips.txt are used") + "\n\n")
 		} else {
-			sb.WriteString(styleDim.Render("            IPs to probe in Phase 1") + "\n\n")
+			sb.WriteString(styleDim.Render("  │          IPs to probe in Phase 1") + "\n\n")
 		}
 
 		// Row 2: Workers
-		rowLabel(2, "  Workers")
-		sb.WriteString(" ")
-		renderPills(quickWorkersLabels(), m.configWorkersIdx)
+		rowLabel(2, "Workers")
+		renderPills(2, quickWorkersLabels(), m.configWorkersIdx)
 		sb.WriteString("\n")
 		if m.configCustomMode && m.configCustomRow == 2 {
-			sb.WriteString(styleAccent.Render("            custom workers: ") + m.configCustomInput.View() + "\n\n")
+			sb.WriteString(styleAccent.Render("  │          custom workers: ") + m.configCustomInput.View() + "\n\n")
 		} else if quickWorkersPresets[m.configWorkersIdx].value == "" && m.configWorkersCustom != "" {
-			sb.WriteString(styleDim.Render(fmt.Sprintf("            concurrent probes  (custom: %s)", m.configWorkersCustom)) + "\n\n")
+			sb.WriteString(styleDim.Render(fmt.Sprintf("  │          concurrent probes  (custom: %s)", m.configWorkersCustom)) + "\n\n")
 		} else {
-			sb.WriteString(styleDim.Render("            concurrent probes") + "\n\n")
+			sb.WriteString(styleDim.Render("  │          concurrent probes") + "\n\n")
 		}
 
 		// Row 3: Timeout
-		rowLabel(3, "  Timeout")
-		sb.WriteString(" ")
-		renderPills(quickTimeoutLabels(), m.configTimeoutIdx)
+		rowLabel(3, "Timeout")
+		renderPills(3, quickTimeoutLabels(), m.configTimeoutIdx)
 		sb.WriteString("\n")
 		if m.configCustomMode && m.configCustomRow == 3 {
-			sb.WriteString(styleAccent.Render("            custom timeout: ") + m.configCustomInput.View() + "\n\n")
+			sb.WriteString(styleAccent.Render("  │          custom timeout: ") + m.configCustomInput.View() + "\n\n")
 		} else if quickTimeoutPresets[m.configTimeoutIdx].value == "" && m.configTimeoutCustom != "" {
-			sb.WriteString(styleDim.Render(fmt.Sprintf("            per-probe deadline  (custom: %s)", m.configTimeoutCustom)) + "\n\n")
+			sb.WriteString(styleDim.Render(fmt.Sprintf("  │          per-probe deadline  (custom: %s)", m.configTimeoutCustom)) + "\n\n")
 		} else {
-			sb.WriteString(styleDim.Render("            per-probe deadline") + "\n\n")
+			sb.WriteString(styleDim.Render("  │          per-probe deadline") + "\n\n")
 		}
 
 		// Row 4: Ports
-		rowLabel(4, "  Ports  ")
-		sb.WriteString(" ")
+		rowLabel(4, "Ports")
 		renderMultiPorts()
 		sb.WriteString("\n")
-		sb.WriteString(styleDim.Render("            space toggles a port; selecting multiple ports multiplies work") + "\n\n")
+		sb.WriteString(styleDim.Render("  │          space toggles a port; selecting multiple ports multiplies work") + "\n\n")
 
 		hint := "  ↑/↓ row   ←/→ option   enter continue   esc back"
 		if m.configCustomMode {
@@ -1747,20 +1762,29 @@ func (m AppModel) viewConfigOptional() string {
 	sb.WriteString(styleTitle.Render("\n  ⚡  Find Working IPs\n"))
 	sb.WriteString(fmt.Sprintf("%s\n\n", styleSep.Render("  "+strings.Repeat("─", minInt(m.width-4, 70)))))
 
-	rowLabel := func(row int, text string) {
+	rowLabel := func(row int, label string) {
 		if m.configOptionalRow == row {
-			sb.WriteString(styleAccent.Render(text))
+			sb.WriteString(styleAccent.Render(fmt.Sprintf("  ┃  %-7s  ", label)))
 		} else {
-			sb.WriteString(styleDim.Render(text))
+			sb.WriteString(styleDim.Render(fmt.Sprintf("  │  %-7s  ", label)))
 		}
 	}
 
-	renderPills := func(labels []string, selected int) {
+	renderPills := func(row int, labels []string, selected int) {
+		isRowFocused := (m.configOptionalRow == row)
 		for i, label := range labels {
 			if i == selected {
-				sb.WriteString(styleSelected.Render(" " + label + " "))
+				if isRowFocused {
+					sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Background(lipgloss.Color("#F6821F")).Render(" " + label + " "))
+				} else {
+					sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F6821F")).Render("  " + label + "  "))
+				}
 			} else {
-				sb.WriteString(styleNormal.Render("  " + label + "  "))
+				if isRowFocused {
+					sb.WriteString(styleNormal.Render("  " + label + "  "))
+				} else {
+					sb.WriteString(styleDim.Render("  " + label + "  "))
+				}
 			}
 			if i < len(labels)-1 {
 				sb.WriteString(styleDim.Render("│"))
@@ -1768,45 +1792,47 @@ func (m AppModel) viewConfigOptional() string {
 		}
 	}
 
-	rowLabel(0, "  Config ")
-	sb.WriteString(" " + m.configInput.View() + "\n")
+	rowLabel(0, "Config")
+	sb.WriteString(m.configInput.View() + "\n")
 	if summary := parsedConfigSummary(m.configInput.Value()); summary != "" {
-		sb.WriteString(styleDim.Render("            "+summary) + "\n\n")
+		sb.WriteString(styleDim.Render("  │          "+summary) + "\n\n")
 	} else {
-		sb.WriteString(styleDim.Render("            optional; leave empty to find healthy endpoints without xray validation") + "\n\n")
+		sb.WriteString(styleDim.Render("  │          optional; leave empty to find healthy endpoints without xray validation") + "\n\n")
 	}
 
-	rowLabel(1, "  Test N ")
-	sb.WriteString(" ")
-	renderPills(configTopNLabels, m.configTopNIdx)
+	rowLabel(1, "Test N")
+	renderPills(1, configTopNLabels, m.configTopNIdx)
 	sb.WriteString("\n")
 	if m.configCustomMode && m.configCustomRow == 5 {
-		sb.WriteString(styleAccent.Render("            custom top N: ") + m.configCustomInput.View() + "\n\n")
+		sb.WriteString(styleAccent.Render("  │          custom top N: ") + m.configCustomInput.View() + "\n\n")
 	} else if m.isTopNCustomSelected() && m.configTopNCustom != "" {
-		sb.WriteString(styleDim.Render(fmt.Sprintf("            Phase 2 candidates to validate  (custom: %s)", m.configTopNCustom)) + "\n\n")
+		sb.WriteString(styleDim.Render(fmt.Sprintf("  │          Phase 2 candidates to validate  (custom: %s)", m.configTopNCustom)) + "\n\n")
 	} else {
-		sb.WriteString(styleDim.Render("            Phase 2 picks — used only when a config URL is entered") + "\n\n")
+		sb.WriteString(styleDim.Render("  │          Phase 2 picks — used only when a config URL is entered") + "\n\n")
 	}
 
-	rowLabel(2, "  Workers")
-	sb.WriteString(" ")
-	renderPills(phase2WorkersLabels(), m.configPhase2WorkersIdx)
+	rowLabel(2, "Workers")
+	renderPills(2, phase2WorkersLabels(), m.configPhase2WorkersIdx)
 	sb.WriteString("\n")
 	if m.configCustomMode && m.configCustomRow == 6 {
-		sb.WriteString(styleAccent.Render("            custom workers: ") + m.configCustomInput.View() + "\n\n")
+		sb.WriteString(styleAccent.Render("  │          custom workers: ") + m.configCustomInput.View() + "\n\n")
 	} else if m.isPhase2WorkersCustomSelected() && m.configPhase2WorkersCustom != "" {
-		sb.WriteString(styleDim.Render(fmt.Sprintf("            Phase 2 xray workers  (custom: %s)", m.configPhase2WorkersCustom)) + "\n\n")
+		sb.WriteString(styleDim.Render(fmt.Sprintf("  │          Phase 2 xray workers  (custom: %s)", m.configPhase2WorkersCustom)) + "\n\n")
 	} else {
-		sb.WriteString(styleDim.Render(fmt.Sprintf("            Phase 2 xray workers; capped at %d for stability", maxPhase2Workers)) + "\n\n")
+		sb.WriteString(styleDim.Render(fmt.Sprintf("  │          Phase 2 xray workers; capped at %d for stability", maxPhase2Workers)) + "\n\n")
 	}
 
-	rowLabel(3, "  Start  ")
+	rowLabel(3, "Start")
 	mode := "Phase 1 only"
 	if strings.TrimSpace(m.configInput.Value()) != "" {
 		mode = "Phase 1 + xray validation"
 	}
-	sb.WriteString(" " + styleNormal.Render(mode) + "\n")
-	sb.WriteString(styleDim.Render("            press Enter here to start") + "\n\n")
+	if m.configOptionalRow == 3 {
+		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Background(lipgloss.Color("#F6821F")).Render(" "+mode+" ") + "\n")
+	} else {
+		sb.WriteString(styleNormal.Render(mode) + "\n")
+	}
+	sb.WriteString(styleDim.Render("  │          press Enter here to start") + "\n\n")
 
 	hint := "  ↑/↓ row   ←/→ option   enter select   esc back"
 	if m.configOptionalRow == 0 {
