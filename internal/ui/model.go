@@ -564,9 +564,9 @@ func endpointCandidateRow(r *result.Result, status string) string {
 	var latencyFormatted string
 	if avg <= 0 {
 		latencyFormatted = styleDim.Render(latencyStr)
-	} else if avg < 150*time.Millisecond {
-		latencyFormatted = styleColLatencyFast.Render(latencyStr)
 	} else if avg < 300*time.Millisecond {
+		latencyFormatted = styleColLatencyFast.Render(latencyStr)
+	} else if avg < 500*time.Millisecond {
 		latencyFormatted = styleColLatencyMid.Render(latencyStr)
 	} else {
 		latencyFormatted = styleColLatencySlow.Render(latencyStr)
@@ -630,9 +630,9 @@ func validationRow(r *xraytest.ValidationResult, status string) string {
 	var latencyFormatted string
 	if !r.Success {
 		latencyFormatted = styleDim.Render(latencyPadded)
-	} else if r.Latency < 200*time.Millisecond {
+	} else if r.Latency < 300*time.Millisecond {
 		latencyFormatted = styleColLatencyFast.Render(latencyPadded)
-	} else if r.Latency < 400*time.Millisecond {
+	} else if r.Latency < 500*time.Millisecond {
 		latencyFormatted = styleColLatencyMid.Render(latencyPadded)
 	} else {
 		latencyFormatted = styleColLatencySlow.Render(latencyPadded)
@@ -1366,9 +1366,8 @@ func (m AppModel) viewScanWithConfig() string {
 	}
 
 	if !m.configDone {
-		sb.WriteString(fmt.Sprintf("  %s %s  xray validating candidates  %s\n\n",
+		sb.WriteString(fmt.Sprintf("  %s  xray validating candidates  %s\n\n",
 			icon,
-			styleAccent.Render(scanPulse(m.bannerFrame)),
 			scanWave(m.bannerFrame+5, 32),
 		))
 	} else if success > 0 {
@@ -2131,7 +2130,7 @@ func (m AppModel) viewConfigPhase1() string {
 	}
 
 	tested := len(m.configPhase1Results)
-	source := "Cloudflare IP Ranges"
+	source := "Cloudflare IPs"
 	if m.configIPMode == configIPSourceFile {
 		source = "ips.txt"
 	}
@@ -2188,9 +2187,8 @@ func (m AppModel) viewConfigPhase1() string {
 		if m.configPhase1Neighboring {
 			statusText = "probing neighboring IPs of healthy hits"
 		}
-		sb.WriteString(fmt.Sprintf("  %s %s  %s  %s\n\n",
+		sb.WriteString(fmt.Sprintf("  %s  %s  %s\n\n",
 			icon,
-			styleAccent.Render(scanPulse(m.bannerFrame)),
 			statusText,
 			scanWave(m.bannerFrame, 28),
 		))
@@ -2711,11 +2709,22 @@ func renderMetadataGrid(width int, source, probe, ports string, tested, healthy,
 		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("Time:    "), styleDim.Render(fmt.Sprintf("%s / %s", elapsed, eta)),
 	)
 
-	styleCol := lipgloss.NewStyle().Width(width / 3).Align(lipgloss.Left)
+	innerWidth := width - 2
+	col1Width := 26
+	col2Width := 17
+	if innerWidth < col1Width+col2Width+15 {
+		col1Width = int(float64(innerWidth) * 0.38)
+		col2Width = int(float64(innerWidth) * 0.25)
+	}
+	col3Width := innerWidth - col1Width - col2Width
 
-	c1Rendered := styleCol.Render(col1)
-	c2Rendered := styleCol.Render(col2)
-	c3Rendered := styleCol.Render(col3)
+	styleCol1 := lipgloss.NewStyle().Width(col1Width).Align(lipgloss.Left)
+	styleCol2 := lipgloss.NewStyle().Width(col2Width).Align(lipgloss.Left)
+	styleCol3 := lipgloss.NewStyle().Width(col3Width).Align(lipgloss.Left)
+
+	c1Rendered := styleCol1.Render(col1)
+	c2Rendered := styleCol2.Render(col2)
+	c3Rendered := styleCol3.Render(col3)
 
 	grid := lipgloss.JoinHorizontal(lipgloss.Top, c1Rendered, c2Rendered, c3Rendered)
 
@@ -2754,11 +2763,22 @@ func renderPhase2MetadataGrid(width int, done, total, success, failed, skipped i
 		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("ETA:    "), styleDim.Render(eta),
 	)
 
-	styleCol := lipgloss.NewStyle().Width(width / 3).Align(lipgloss.Left)
+	innerWidth := width - 2
+	col1Width := 23
+	col2Width := 19
+	if innerWidth < col1Width+col2Width+15 {
+		col1Width = int(float64(innerWidth) * 0.35)
+		col2Width = int(float64(innerWidth) * 0.30)
+	}
+	col3Width := innerWidth - col1Width - col2Width
 
-	c1Rendered := styleCol.Render(col1)
-	c2Rendered := styleCol.Render(col2)
-	c3Rendered := styleCol.Render(col3)
+	styleCol1 := lipgloss.NewStyle().Width(col1Width).Align(lipgloss.Left)
+	styleCol2 := lipgloss.NewStyle().Width(col2Width).Align(lipgloss.Left)
+	styleCol3 := lipgloss.NewStyle().Width(col3Width).Align(lipgloss.Left)
+
+	c1Rendered := styleCol1.Render(col1)
+	c2Rendered := styleCol2.Render(col2)
+	c3Rendered := styleCol3.Render(col3)
 
 	grid := lipgloss.JoinHorizontal(lipgloss.Top, c1Rendered, c2Rendered, c3Rendered)
 
