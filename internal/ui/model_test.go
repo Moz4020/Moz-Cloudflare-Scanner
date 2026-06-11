@@ -17,14 +17,17 @@ import (
 )
 
 func TestMenuOnlyShowsMainWorkflow(t *testing.T) {
-	if len(menuEntries) != 4 {
-		t.Fatalf("menu entries = %d, want 4", len(menuEntries))
+	if len(menuEntries) != 5 {
+		t.Fatalf("menu entries = %d, want 5", len(menuEntries))
 	}
 	if menuEntries[0].label != "Find Working IPs" {
 		t.Fatalf("first menu item = %q, want Find Working IPs", menuEntries[0].label)
 	}
 	if menuEntries[1].label != "Generate V2Ray Configs" {
 		t.Fatalf("second menu item = %q, want Generate V2Ray Configs", menuEntries[1].label)
+	}
+	if menuEntries[2].label != "Test IP Stability" {
+		t.Fatalf("third menu item = %q, want Test IP Stability", menuEntries[2].label)
 	}
 	for _, entry := range menuEntries {
 		for _, removed := range []string{"Quick Scan", "Custom Scan", "Test IPs", "Discover Colos"} {
@@ -663,3 +666,51 @@ func maxPhase2LatencyForTest(results []*result.Result) time.Duration {
 	}
 	return max
 }
+
+func TestSortStabilityResults(t *testing.T) {
+	r1 := &result.Result{
+		IP:        net.ParseIP("1.1.1.1"),
+		Port:      443,
+		Latencies: []time.Duration{100 * time.Millisecond, 100 * time.Millisecond, 100 * time.Millisecond}, // 0% loss, 0ms jitter, 100ms avg
+	}
+	r2 := &result.Result{
+		IP:        net.ParseIP("1.1.1.2"),
+		Port:      443,
+		Latencies: []time.Duration{100 * time.Millisecond, 150 * time.Millisecond, 50 * time.Millisecond},  // 0% loss, some jitter, 100ms avg
+	}
+	r3 := &result.Result{
+		IP:        net.ParseIP("1.1.1.3"),
+		Port:      443,
+		Latencies: []time.Duration{0, 100 * time.Millisecond, 100 * time.Millisecond},                  // 33.3% loss, 100ms avg
+	}
+	r4 := &result.Result{
+		IP:        net.ParseIP("1.1.1.4"),
+		Port:      443,
+		Latencies: []time.Duration{50 * time.Millisecond, 50 * time.Millisecond, 50 * time.Millisecond},  // 0% loss, 0ms jitter, 50ms avg
+	}
+	r5 := &result.Result{
+		IP:        net.ParseIP("1.1.1.5"),
+		Port:      443,
+		Latencies: []time.Duration{0, 0, 0}, // 100% loss
+	}
+
+	results := []*result.Result{r3, r2, r5, r1, r4}
+	SortStabilityResults(results)
+
+	if results[0] != r4 {
+		t.Errorf("expected index 0 to be r4 (50ms avg, 0 jitter), got %s", results[0].IP)
+	}
+	if results[1] != r1 {
+		t.Errorf("expected index 1 to be r1 (100ms avg, 0 jitter), got %s", results[1].IP)
+	}
+	if results[2] != r2 {
+		t.Errorf("expected index 2 to be r2 (100ms avg, non-zero jitter), got %s", results[2].IP)
+	}
+	if results[3] != r3 {
+		t.Errorf("expected index 3 to be r3 (33%% loss), got %s", results[3].IP)
+	}
+	if results[4] != r5 {
+		t.Errorf("expected index 4 to be r5 (100%% loss), got %s", results[4].IP)
+	}
+}
+
