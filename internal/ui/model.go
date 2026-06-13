@@ -179,6 +179,7 @@ type AppModel struct {
 	generatorCount       int
 	// config setup options
 	configURL      string
+	configProfileIdx int // index into configProfileLabels (0 = Fast, 1 = Balanced, 2 = Deep, 3 = Custom)
 	configCountIdx int // index into configCountValues
 	configTopNIdx  int // index into configTopNValues
 	configSetupRow int // 0=source, 1=count, 2=workers, 3=timeout, 4=ports
@@ -216,6 +217,7 @@ type AppModel struct {
 	stabilityWorkersCustom  string
 	stabilityPortIdx        int
 	stabilityPortCustom      string
+	stabilityProfileIdx     int // index into stabilityProfileLabels (0 = Fast Test, 1 = Balanced, 2 = Accurate, 3 = Custom)
 	stabilitySetupRow       int // 0=tries, 1=interval, 2=workers, 3=port, 4=start
 	stabilityResults        []*result.Result
 	stabilityTotal          int
@@ -270,10 +272,12 @@ func NewApp(version string) AppModel {
 		width:                  120,
 		height:                 40,
 		scanStarted:            time.Now(),
+		configProfileIdx:       1, // default: Balanced
 		configCountIdx:         2,
 		configWorkersIdx:       1,
 		configTimeoutIdx:       1,
 		configPhase2WorkersIdx: 1, // default: Balanced 50
+		stabilityProfileIdx:     1, // default: Balanced
 		stabilityTriesIdx:      1, // default: 10 packets
 		stabilityIntervalIdx:   1, // default: 200ms
 		stabilityWorkersIdx:    1, // default: 25 workers
@@ -511,6 +515,7 @@ func (m AppModel) selectMenuItem() (tea.Model, tea.Cmd) {
 		m.configDone = false
 		m.configSetupRow = 0
 		m.configOptionalRow = 0
+		m.configProfileIdx = 1       // default: Balanced
 		m.configCountIdx = 2         // default: Balanced 20k
 		m.configTopNIdx = 2          // default: 50 for Phase 2
 		m.configWorkersIdx = 1       // default: Balanced 100
@@ -546,6 +551,7 @@ func (m AppModel) selectMenuItem() (tea.Model, tea.Cmd) {
 		return m, textinput.Blink
 	case menuStabilityTest:
 		m.page = PageStabilityTestSetup
+		m.stabilityProfileIdx = 1 // default: Balanced
 		m.stabilityTriesIdx = 1 // default: 10 packets
 		m.stabilityIntervalIdx = 1 // default: 200ms
 		m.stabilityWorkersIdx = 1 // default: 25 workers
@@ -1359,16 +1365,16 @@ func (m AppModel) viewScanWithConfig() string {
 				} else {
 					label = "  " + label
 				}
-				if i == m.configPortFocus && m.configSetupRow == 4 {
+				if i == m.configPortFocus && m.configSetupRow == 5 {
 					sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Background(lipgloss.Color("#F6821F")).Render(" " + label + " "))
 				} else if enabled[choice.port] {
-					if m.configSetupRow == 4 {
+					if m.configSetupRow == 5 {
 						sb.WriteString(styleGood.Render(" " + label + " "))
 					} else {
 						sb.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#27AE60")).Render(" " + label + " "))
 					}
 				} else {
-					if m.configSetupRow == 4 {
+					if m.configSetupRow == 5 {
 						sb.WriteString(styleNormal.Render(" " + label + " "))
 					} else {
 						sb.WriteString(styleDim.Render(" " + label + " "))
@@ -1380,9 +1386,26 @@ func (m AppModel) viewScanWithConfig() string {
 			}
 		}
 
-		// Row 0: Source
-		rowLabel(0, "Source")
-		renderPills(0, configIPModeLabels, m.configIPMode)
+		// Row 0: Profile
+		rowLabel(0, "Profile")
+		renderPills(0, configProfileLabels, m.configProfileIdx)
+		sb.WriteString("\n")
+		var profileDesc string
+		switch m.configProfileIdx {
+		case 0:
+			profileDesc = "Fast: 5k scans, 200 workers, 2s timeout"
+		case 1:
+			profileDesc = "Balanced: 20k scans, 100 workers, 3s timeout"
+		case 2:
+			profileDesc = "Deep: 50k scans, 300 workers, 5s timeout"
+		default:
+			profileDesc = "Custom: adjust count, workers, and timeout manually"
+		}
+		sb.WriteString(styleDim.Render("  │          " + profileDesc) + "\n\n")
+
+		// Row 1: Source
+		rowLabel(1, "Source")
+		renderPills(1, configIPModeLabels, m.configIPMode)
 		sb.WriteString("\n")
 		if m.configIPMode == configIPSourceDefault {
 			sb.WriteString(styleDim.Render("  │          random sample from official Cloudflare IPv4 ranges") + "\n\n")
@@ -1390,11 +1413,11 @@ func (m AppModel) viewScanWithConfig() string {
 			sb.WriteString(styleDim.Render("  │          exact IPs and small IPv4 CIDRs from ips.txt") + "\n\n")
 		}
 
-		// Row 1: Count
-		rowLabel(1, "Count")
-		renderPills(1, configCountLabels, m.configCountIdx)
+		// Row 2: Count
+		rowLabel(2, "Count")
+		renderPills(2, configCountLabels, m.configCountIdx)
 		sb.WriteString("\n")
-		if m.configCustomMode && m.configCustomRow == 1 {
+		if m.configCustomMode && m.configCustomRow == 2 {
 			sb.WriteString(styleAccent.Render("  │          custom count: ") + m.configCustomInput.View() + "\n\n")
 		} else if configCountValues[m.configCountIdx] == 0 && m.configCountCustom != "" {
 			sb.WriteString(styleDim.Render(fmt.Sprintf("  │          IPs to probe in Phase 1  (custom: %s)", m.configCountCustom)) + "\n\n")
@@ -1404,11 +1427,11 @@ func (m AppModel) viewScanWithConfig() string {
 			sb.WriteString(styleDim.Render("  │          IPs to probe in Phase 1") + "\n\n")
 		}
 
-		// Row 2: Workers
-		rowLabel(2, "Workers")
-		renderPills(2, quickWorkersLabels(), m.configWorkersIdx)
+		// Row 3: Workers
+		rowLabel(3, "Workers")
+		renderPills(3, quickWorkersLabels(), m.configWorkersIdx)
 		sb.WriteString("\n")
-		if m.configCustomMode && m.configCustomRow == 2 {
+		if m.configCustomMode && m.configCustomRow == 3 {
 			sb.WriteString(styleAccent.Render("  │          custom workers: ") + m.configCustomInput.View() + "\n\n")
 		} else if quickWorkersPresets[m.configWorkersIdx].value == "" && m.configWorkersCustom != "" {
 			sb.WriteString(styleDim.Render(fmt.Sprintf("  │          concurrent probes  (custom: %s)", m.configWorkersCustom)) + "\n\n")
@@ -1416,11 +1439,11 @@ func (m AppModel) viewScanWithConfig() string {
 			sb.WriteString(styleDim.Render("  │          concurrent probes") + "\n\n")
 		}
 
-		// Row 3: Timeout
-		rowLabel(3, "Timeout")
-		renderPills(3, quickTimeoutLabels(), m.configTimeoutIdx)
+		// Row 4: Timeout
+		rowLabel(4, "Timeout")
+		renderPills(4, quickTimeoutLabels(), m.configTimeoutIdx)
 		sb.WriteString("\n")
-		if m.configCustomMode && m.configCustomRow == 3 {
+		if m.configCustomMode && m.configCustomRow == 4 {
 			sb.WriteString(styleAccent.Render("  │          custom timeout: ") + m.configCustomInput.View() + "\n\n")
 		} else if quickTimeoutPresets[m.configTimeoutIdx].value == "" && m.configTimeoutCustom != "" {
 			sb.WriteString(styleDim.Render(fmt.Sprintf("  │          per-probe deadline  (custom: %s)", m.configTimeoutCustom)) + "\n\n")
@@ -1428,8 +1451,8 @@ func (m AppModel) viewScanWithConfig() string {
 			sb.WriteString(styleDim.Render("  │          per-probe deadline") + "\n\n")
 		}
 
-		// Row 4: Ports
-		rowLabel(4, "Ports")
+		// Row 5: Ports
+		rowLabel(5, "Ports")
 		renderMultiPorts()
 		sb.WriteString("\n")
 		sb.WriteString(styleDim.Render("  │          space toggles a port; selecting multiple ports multiplies work") + "\n\n")
@@ -1698,12 +1721,15 @@ func (m AppModel) handleScanWithConfigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "enter":
 			val := strings.TrimSpace(m.configCustomInput.Value())
 			switch m.configCustomRow {
-			case 1:
-				m.configCountCustom = val
 			case 2:
-				m.configWorkersCustom = val
+				m.configCountCustom = val
+				m.updateConfigProfileFromSettings()
 			case 3:
+				m.configWorkersCustom = val
+				m.updateConfigProfileFromSettings()
+			case 4:
 				m.configTimeoutCustom = val
+				m.updateConfigProfileFromSettings()
 			}
 			m.configCustomMode = false
 			m.configCustomInput.Blur()
@@ -1747,28 +1773,40 @@ func (m AppModel) handleScanWithConfigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// --- Setup navigation (Source → Count → Workers → Timeout → Ports) ---
-	const maxRow = 4
+	// --- Setup navigation (Profile → Source → Count → Workers → Timeout → Ports) ---
+	const maxRow = 5
 
 	configNavLeft := func() {
 		switch m.configSetupRow {
 		case 0:
+			if m.configProfileIdx > 0 {
+				if m.configProfileIdx == 3 {
+					m.configProfileIdx = 2
+				} else {
+					m.configProfileIdx--
+				}
+				m.applyConfigProfile()
+			}
+		case 1:
 			if m.configIPMode > 0 {
 				m.configIPMode--
 			}
-		case 1:
+		case 2:
 			if m.configCountIdx > 0 {
 				m.configCountIdx--
-			}
-		case 2:
-			if m.configWorkersIdx > 0 {
-				m.configWorkersIdx--
+				m.updateConfigProfileFromSettings()
 			}
 		case 3:
-			if m.configTimeoutIdx > 0 {
-				m.configTimeoutIdx--
+			if m.configWorkersIdx > 0 {
+				m.configWorkersIdx--
+				m.updateConfigProfileFromSettings()
 			}
 		case 4:
+			if m.configTimeoutIdx > 0 {
+				m.configTimeoutIdx--
+				m.updateConfigProfileFromSettings()
+			}
+		case 5:
 			if m.configPortFocus > 0 {
 				m.configPortFocus--
 			}
@@ -1777,22 +1815,33 @@ func (m AppModel) handleScanWithConfigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	configNavRight := func() {
 		switch m.configSetupRow {
 		case 0:
+			if m.configProfileIdx < 2 {
+				m.configProfileIdx++
+				m.applyConfigProfile()
+			} else if m.configProfileIdx == 3 {
+				m.configProfileIdx = 1
+				m.applyConfigProfile()
+			}
+		case 1:
 			if m.configIPMode < len(configIPModeLabels)-1 {
 				m.configIPMode++
 			}
-		case 1:
+		case 2:
 			if m.configCountIdx < len(configCountValues)-1 {
 				m.configCountIdx++
-			}
-		case 2:
-			if m.configWorkersIdx < len(quickWorkersPresets)-1 {
-				m.configWorkersIdx++
+				m.updateConfigProfileFromSettings()
 			}
 		case 3:
-			if m.configTimeoutIdx < len(quickTimeoutPresets)-1 {
-				m.configTimeoutIdx++
+			if m.configWorkersIdx < len(quickWorkersPresets)-1 {
+				m.configWorkersIdx++
+				m.updateConfigProfileFromSettings()
 			}
 		case 4:
+			if m.configTimeoutIdx < len(quickTimeoutPresets)-1 {
+				m.configTimeoutIdx++
+				m.updateConfigProfileFromSettings()
+			}
+		case 5:
 			if m.configPortFocus < len(configPortChoices)-1 {
 				m.configPortFocus++
 			}
@@ -1818,34 +1867,34 @@ func (m AppModel) handleScanWithConfigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case " ":
-		if m.configSetupRow == 4 {
+		if m.configSetupRow == 5 {
 			m.toggleFocusedConfigPort()
 			return m, nil
 		}
 	case "enter":
-		if m.configSetupRow == 4 {
+		if m.configSetupRow == 5 {
 			m.toggleFocusedConfigPort()
 			return m, nil
 		}
-		if m.configSetupRow == 1 && configCountValues[m.configCountIdx] == 0 {
+		if m.configSetupRow == 2 && configCountValues[m.configCountIdx] == 0 {
 			m.configCustomMode = true
-			m.configCustomRow = 1
+			m.configCustomRow = 2
 			m.configCustomInput.SetValue(m.configCountCustom)
 			m.configCustomInput.Placeholder = "e.g. 50000"
 			m.configCustomInput.Focus()
 			return m, textinput.Blink
 		}
-		if m.configSetupRow == 2 && quickWorkersPresets[m.configWorkersIdx].value == "" {
+		if m.configSetupRow == 3 && quickWorkersPresets[m.configWorkersIdx].value == "" {
 			m.configCustomMode = true
-			m.configCustomRow = 2
+			m.configCustomRow = 3
 			m.configCustomInput.SetValue(m.configWorkersCustom)
 			m.configCustomInput.Placeholder = "e.g. 150"
 			m.configCustomInput.Focus()
 			return m, textinput.Blink
 		}
-		if m.configSetupRow == 3 && quickTimeoutPresets[m.configTimeoutIdx].value == "" {
+		if m.configSetupRow == 4 && quickTimeoutPresets[m.configTimeoutIdx].value == "" {
 			m.configCustomMode = true
-			m.configCustomRow = 3
+			m.configCustomRow = 4
 			m.configCustomInput.SetValue(m.configTimeoutCustom)
 			m.configCustomInput.Placeholder = "e.g. 7s"
 			m.configCustomInput.Focus()
@@ -2188,6 +2237,71 @@ type ConfigProgressMsg struct {
 // ---------------------------------------------------------------------------
 // Config Setup presets
 // ---------------------------------------------------------------------------
+
+var configProfileLabels = []string{"Fast", "Balanced", "Deep", "Custom"}
+
+func (m *AppModel) applyConfigProfile() {
+	switch m.configProfileIdx {
+	case 0: // Fast
+		m.configCountIdx = 1       // Normal 5k
+		m.configWorkersIdx = 2     // Fast 200
+		m.configTimeoutIdx = 0     // Fast 2s
+	case 1: // Balanced
+		m.configCountIdx = 2       // Balanced 20k
+		m.configWorkersIdx = 1     // Balanced 100
+		m.configTimeoutIdx = 1     // Balanced 3s
+	case 2: // Deep
+		m.configCountIdx = 3       // Deep 50k
+		m.configWorkersIdx = 3     // Max 300
+		m.configTimeoutIdx = 2     // Safe 5s
+	}
+}
+
+func (m *AppModel) updateConfigProfileFromSettings() {
+	if m.configCountIdx == 1 && m.configWorkersIdx == 2 && m.configTimeoutIdx == 0 {
+		m.configProfileIdx = 0
+	} else if m.configCountIdx == 2 && m.configWorkersIdx == 1 && m.configTimeoutIdx == 1 {
+		m.configProfileIdx = 1
+	} else if m.configCountIdx == 3 && m.configWorkersIdx == 3 && m.configTimeoutIdx == 2 {
+		m.configProfileIdx = 2
+	} else {
+		m.configProfileIdx = 3
+	}
+}
+
+var stabilityProfileLabels = []string{"Fast Test", "Balanced", "Accurate", "Custom"}
+
+func (m *AppModel) applyStabilityProfile() {
+	switch m.stabilityProfileIdx {
+	case 0: // Fast Test
+		m.stabilityTriesIdx = 0    // 5 packets
+		m.stabilityIntervalIdx = 0 // 100ms
+		m.stabilityWorkersIdx = 2  // 50 workers
+		m.stabilityPortIdx = 0     // 443
+	case 1: // Balanced
+		m.stabilityTriesIdx = 1    // 10 packets
+		m.stabilityIntervalIdx = 1 // 200ms
+		m.stabilityWorkersIdx = 1  // 25 workers
+		m.stabilityPortIdx = 0     // 443
+	case 2: // Accurate
+		m.stabilityTriesIdx = 3    // 50 packets
+		m.stabilityIntervalIdx = 1 // 200ms
+		m.stabilityWorkersIdx = 0  // 10 workers
+		m.stabilityPortIdx = 0     // 443
+	}
+}
+
+func (m *AppModel) updateStabilityProfileFromSettings() {
+	if m.stabilityTriesIdx == 0 && m.stabilityIntervalIdx == 0 && m.stabilityWorkersIdx == 2 && m.stabilityPortIdx == 0 {
+		m.stabilityProfileIdx = 0
+	} else if m.stabilityTriesIdx == 1 && m.stabilityIntervalIdx == 1 && m.stabilityWorkersIdx == 1 && m.stabilityPortIdx == 0 {
+		m.stabilityProfileIdx = 1
+	} else if m.stabilityTriesIdx == 3 && m.stabilityIntervalIdx == 1 && m.stabilityWorkersIdx == 0 && m.stabilityPortIdx == 0 {
+		m.stabilityProfileIdx = 2
+	} else {
+		m.stabilityProfileIdx = 3
+	}
+}
 
 var configCountValues = []int{1000, 5000, 20000, 50000, 0} // 0 = custom
 var configCountLabels = []string{"Quick 1k", "Normal 5k", "Balanced 20k", "Deep 50k", "Custom"}
@@ -3012,9 +3126,26 @@ func (m AppModel) viewStabilityTestSetup() string {
 		}
 	}
 
-	// Row 0: Packets
-	rowLabel(0, "Packets")
-	renderPills(0, stabilityTriesLabels, m.stabilityTriesIdx)
+	// Row 0: Profile
+	rowLabel(0, "Profile")
+	renderPills(0, stabilityProfileLabels, m.stabilityProfileIdx)
+	sb.WriteString("\n")
+	var profileDesc string
+	switch m.stabilityProfileIdx {
+	case 0:
+		profileDesc = "Fast Test: 5 packets, 100ms interval, 50 workers"
+	case 1:
+		profileDesc = "Balanced: 10 packets, 200ms interval, 25 workers"
+	case 2:
+		profileDesc = "Accurate: 50 packets, 200ms interval, 10 workers (recommended for gaming)"
+	default:
+		profileDesc = "Custom: adjust parameters manually"
+	}
+	sb.WriteString(styleDim.Render("  │           " + profileDesc) + "\n\n")
+
+	// Row 1: Packets
+	rowLabel(1, "Packets")
+	renderPills(1, stabilityTriesLabels, m.stabilityTriesIdx)
 	sb.WriteString("\n")
 	if m.stabilityCustomMode && m.stabilityCustomRow == 1 {
 		sb.WriteString(styleAccent.Render("  │           custom packets: ") + m.configCustomInput.View() + "\n\n")
@@ -3024,9 +3155,9 @@ func (m AppModel) viewStabilityTestSetup() string {
 		sb.WriteString(styleDim.Render("  │           probes sent per IP") + "\n\n")
 	}
 
-	// Row 1: Interval
-	rowLabel(1, "Interval")
-	renderPills(1, stabilityIntervalLabels, m.stabilityIntervalIdx)
+	// Row 2: Interval
+	rowLabel(2, "Interval")
+	renderPills(2, stabilityIntervalLabels, m.stabilityIntervalIdx)
 	sb.WriteString("\n")
 	if m.stabilityCustomMode && m.stabilityCustomRow == 2 {
 		sb.WriteString(styleAccent.Render("  │           custom interval: ") + m.configCustomInput.View() + "\n\n")
@@ -3036,9 +3167,9 @@ func (m AppModel) viewStabilityTestSetup() string {
 		sb.WriteString(styleDim.Render("  │           delay between probes") + "\n\n")
 	}
 
-	// Row 2: Workers
-	rowLabel(2, "Workers")
-	renderPills(2, stabilityWorkersLabels, m.stabilityWorkersIdx)
+	// Row 3: Workers
+	rowLabel(3, "Workers")
+	renderPills(3, stabilityWorkersLabels, m.stabilityWorkersIdx)
 	sb.WriteString("\n")
 	if m.stabilityCustomMode && m.stabilityCustomRow == 3 {
 		sb.WriteString(styleAccent.Render("  │           custom workers: ") + m.configCustomInput.View() + "\n\n")
@@ -3048,9 +3179,9 @@ func (m AppModel) viewStabilityTestSetup() string {
 		sb.WriteString(styleDim.Render("  │           concurrent IPs to test") + "\n\n")
 	}
 
-	// Row 3: Port
-	rowLabel(3, "Port")
-	renderPills(3, stabilityPortLabels, m.stabilityPortIdx)
+	// Row 4: Port
+	rowLabel(4, "Port")
+	renderPills(4, stabilityPortLabels, m.stabilityPortIdx)
 	sb.WriteString("\n")
 	if m.stabilityCustomMode && m.stabilityCustomRow == 4 {
 		sb.WriteString(styleAccent.Render("  │           custom port: ") + m.configCustomInput.View() + "\n\n")
@@ -3060,9 +3191,9 @@ func (m AppModel) viewStabilityTestSetup() string {
 		sb.WriteString(styleDim.Render("  │           destination TCP port") + "\n\n")
 	}
 
-	// Row 4: Start
-	rowLabel(4, "Start")
-	if m.stabilitySetupRow == 4 {
+	// Row 5: Start
+	rowLabel(5, "Start")
+	if m.stabilitySetupRow == 5 {
 		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Background(lipgloss.Color("#F6821F")).Render(" Begin Stability Test ") + "\n")
 	} else {
 		sb.WriteString(styleNormal.Render("Begin Stability Test") + "\n")
@@ -3326,12 +3457,16 @@ func (m AppModel) handleStabilityTestSetupKey(msg tea.KeyMsg) (tea.Model, tea.Cm
 			switch m.stabilityCustomRow {
 			case 1:
 				m.stabilityTriesCustom = val
+				m.updateStabilityProfileFromSettings()
 			case 2:
 				m.stabilityIntervalCustom = val
+				m.updateStabilityProfileFromSettings()
 			case 3:
 				m.stabilityWorkersCustom = val
+				m.updateStabilityProfileFromSettings()
 			case 4:
 				m.stabilityPortCustom = val
+				m.updateStabilityProfileFromSettings()
 			}
 			m.stabilityCustomMode = false
 			m.configCustomInput.Blur()
@@ -3357,52 +3492,77 @@ func (m AppModel) handleStabilityTestSetupKey(msg tea.KeyMsg) (tea.Model, tea.Cm
 		}
 		return m, nil
 	case "down", "j":
-		if m.stabilitySetupRow < 4 {
+		if m.stabilitySetupRow < 5 {
 			m.stabilitySetupRow++
 		}
 		return m, nil
 	case "left", "h":
 		switch m.stabilitySetupRow {
 		case 0:
-			if m.stabilityTriesIdx > 0 {
-				m.stabilityTriesIdx--
+			if m.stabilityProfileIdx > 0 {
+				if m.stabilityProfileIdx == 3 {
+					m.stabilityProfileIdx = 2
+				} else {
+					m.stabilityProfileIdx--
+				}
+				m.applyStabilityProfile()
 			}
 		case 1:
-			if m.stabilityIntervalIdx > 0 {
-				m.stabilityIntervalIdx--
+			if m.stabilityTriesIdx > 0 {
+				m.stabilityTriesIdx--
+				m.updateStabilityProfileFromSettings()
 			}
 		case 2:
-			if m.stabilityWorkersIdx > 0 {
-				m.stabilityWorkersIdx--
+			if m.stabilityIntervalIdx > 0 {
+				m.stabilityIntervalIdx--
+				m.updateStabilityProfileFromSettings()
 			}
 		case 3:
+			if m.stabilityWorkersIdx > 0 {
+				m.stabilityWorkersIdx--
+				m.updateStabilityProfileFromSettings()
+			}
+		case 4:
 			if m.stabilityPortIdx > 0 {
 				m.stabilityPortIdx--
+				m.updateStabilityProfileFromSettings()
 			}
 		}
 		return m, nil
 	case "right", "l":
 		switch m.stabilitySetupRow {
 		case 0:
-			if m.stabilityTriesIdx < len(stabilityTriesLabels)-1 {
-				m.stabilityTriesIdx++
+			if m.stabilityProfileIdx < 2 {
+				m.stabilityProfileIdx++
+				m.applyStabilityProfile()
+			} else if m.stabilityProfileIdx == 3 {
+				m.stabilityProfileIdx = 1
+				m.applyStabilityProfile()
 			}
 		case 1:
-			if m.stabilityIntervalIdx < len(stabilityIntervalLabels)-1 {
-				m.stabilityIntervalIdx++
+			if m.stabilityTriesIdx < len(stabilityTriesLabels)-1 {
+				m.stabilityTriesIdx++
+				m.updateStabilityProfileFromSettings()
 			}
 		case 2:
-			if m.stabilityWorkersIdx < len(stabilityWorkersLabels)-1 {
-				m.stabilityWorkersIdx++
+			if m.stabilityIntervalIdx < len(stabilityIntervalLabels)-1 {
+				m.stabilityIntervalIdx++
+				m.updateStabilityProfileFromSettings()
 			}
 		case 3:
+			if m.stabilityWorkersIdx < len(stabilityWorkersLabels)-1 {
+				m.stabilityWorkersIdx++
+				m.updateStabilityProfileFromSettings()
+			}
+		case 4:
 			if m.stabilityPortIdx < len(stabilityPortLabels)-1 {
 				m.stabilityPortIdx++
+				m.updateStabilityProfileFromSettings()
 			}
 		}
 		return m, nil
 	case "enter":
-		if m.stabilitySetupRow == 0 && stabilityTriesValues[m.stabilityTriesIdx] == 0 {
+		if m.stabilitySetupRow == 1 && stabilityTriesValues[m.stabilityTriesIdx] == 0 {
 			m.stabilityCustomMode = true
 			m.stabilityCustomRow = 1
 			m.configCustomInput.SetValue(m.stabilityTriesCustom)
@@ -3410,7 +3570,7 @@ func (m AppModel) handleStabilityTestSetupKey(msg tea.KeyMsg) (tea.Model, tea.Cm
 			m.configCustomInput.Focus()
 			return m, textinput.Blink
 		}
-		if m.stabilitySetupRow == 1 && stabilityIntervalValues[m.stabilityIntervalIdx] == 0 {
+		if m.stabilitySetupRow == 2 && stabilityIntervalValues[m.stabilityIntervalIdx] == 0 {
 			m.stabilityCustomMode = true
 			m.stabilityCustomRow = 2
 			m.configCustomInput.SetValue(m.stabilityIntervalCustom)
@@ -3418,7 +3578,7 @@ func (m AppModel) handleStabilityTestSetupKey(msg tea.KeyMsg) (tea.Model, tea.Cm
 			m.configCustomInput.Focus()
 			return m, textinput.Blink
 		}
-		if m.stabilitySetupRow == 2 && stabilityWorkersValues[m.stabilityWorkersIdx] == 0 {
+		if m.stabilitySetupRow == 3 && stabilityWorkersValues[m.stabilityWorkersIdx] == 0 {
 			m.stabilityCustomMode = true
 			m.stabilityCustomRow = 3
 			m.configCustomInput.SetValue(m.stabilityWorkersCustom)
@@ -3426,7 +3586,7 @@ func (m AppModel) handleStabilityTestSetupKey(msg tea.KeyMsg) (tea.Model, tea.Cm
 			m.configCustomInput.Focus()
 			return m, textinput.Blink
 		}
-		if m.stabilitySetupRow == 3 && stabilityPortValues[m.stabilityPortIdx] == 0 {
+		if m.stabilitySetupRow == 4 && stabilityPortValues[m.stabilityPortIdx] == 0 {
 			m.stabilityCustomMode = true
 			m.stabilityCustomRow = 4
 			m.configCustomInput.SetValue(m.stabilityPortCustom)
@@ -3435,7 +3595,7 @@ func (m AppModel) handleStabilityTestSetupKey(msg tea.KeyMsg) (tea.Model, tea.Cm
 			return m, textinput.Blink
 		}
 
-		if m.stabilitySetupRow == 4 {
+		if m.stabilitySetupRow == 5 {
 			m.page = PageStabilityTestProgress
 			m.stabilityScanning = true
 			m.stabilityDone = false

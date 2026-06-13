@@ -714,3 +714,69 @@ func TestSortStabilityResults(t *testing.T) {
 	}
 }
 
+func TestConfigurationProfiles(t *testing.T) {
+	// 1. Check IP scanner presets
+	m := NewApp("test")
+	
+	// Default should be Balanced (1)
+	if m.configProfileIdx != 1 {
+		t.Fatalf("expected default configProfileIdx = 1, got %d", m.configProfileIdx)
+	}
+
+	// Change to Fast (0) and apply
+	m.configProfileIdx = 0
+	m.applyConfigProfile()
+	if m.configCountIdx != 1 || m.configWorkersIdx != 2 || m.configTimeoutIdx != 0 {
+		t.Errorf("Fast profile didn't set correct values: count=%d workers=%d timeout=%d",
+			m.configCountIdx, m.configWorkersIdx, m.configTimeoutIdx)
+	}
+
+	// Change count and verify it shifts to Custom (3)
+	m.configCountIdx = 2
+	m.updateConfigProfileFromSettings()
+	if m.configProfileIdx != 3 {
+		t.Errorf("expected profile to drop to Custom (3), got %d", m.configProfileIdx)
+	}
+
+	// Restore Fast settings manually and verify it auto-detects Fast (0)
+	m.configCountIdx = 1
+	m.configWorkersIdx = 2
+	m.configTimeoutIdx = 0
+	m.updateConfigProfileFromSettings()
+	if m.configProfileIdx != 0 {
+		t.Errorf("expected profile to auto-detect Fast (0), got %d", m.configProfileIdx)
+	}
+
+	// 2. Check stability test presets
+	// Default should be Balanced (1)
+	if m.stabilityProfileIdx != 1 {
+		t.Fatalf("expected default stabilityProfileIdx = 1, got %d", m.stabilityProfileIdx)
+	}
+
+	// Change to Accurate (2) and apply
+	m.stabilityProfileIdx = 2
+	m.applyStabilityProfile()
+	if m.stabilityTriesIdx != 3 || m.stabilityIntervalIdx != 1 || m.stabilityWorkersIdx != 0 || m.stabilityPortIdx != 0 {
+		t.Errorf("Accurate profile didn't set correct values: tries=%d interval=%d workers=%d port=%d",
+			m.stabilityTriesIdx, m.stabilityIntervalIdx, m.stabilityWorkersIdx, m.stabilityPortIdx)
+	}
+
+	// Change workers and verify it shifts to Custom (3)
+	m.stabilityWorkersIdx = 2
+	m.updateStabilityProfileFromSettings()
+	if m.stabilityProfileIdx != 3 {
+		t.Errorf("expected stability profile to drop to Custom (3), got %d", m.stabilityProfileIdx)
+	}
+
+	// Restore Balanced settings manually and verify it auto-detects Balanced (1)
+	m.stabilityTriesIdx = 1
+	m.stabilityIntervalIdx = 1
+	m.stabilityWorkersIdx = 1
+	m.stabilityPortIdx = 0
+	m.updateStabilityProfileFromSettings()
+	if m.stabilityProfileIdx != 1 {
+		t.Errorf("expected stability profile to auto-detect Balanced (1), got %d", m.stabilityProfileIdx)
+	}
+}
+
+
