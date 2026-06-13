@@ -200,6 +200,7 @@ type AppModel struct {
 	configSelectedPorts       map[int]bool
 	// phase 1 state
 	configPhase1Results     []*result.Result
+	configPhase1Top20       []*result.Result
 	configPhase1Done        bool
 	configPhase1Only        bool // true when scan stops after Phase 1 (no config URL)
 	configPhase1Total       int  // intended IP count for Phase 1 progress display
@@ -392,6 +393,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ConfigPhase1ResultMsg:
 		m.configPhase1Results = append(m.configPhase1Results, msg.Result)
+		m.updatePhase1Top20(msg.Result)
 		return m, nil
 
 	case ConfigPhase1TotalUpdateMsg:
@@ -2142,6 +2144,7 @@ func (m AppModel) launchPhase1FromOptional() (AppModel, tea.Cmd) {
 	m.statusMsg = ""
 	m.configPhase1Only = !withConfig
 	m.configPhase1Results = nil
+	m.configPhase1Top20 = nil
 	m.configPhase1Done = false
 	m.configPhase1Neighboring = false
 	m.page = PageConfigPhase1
@@ -2379,7 +2382,7 @@ func (m AppModel) viewConfigPhase1() string {
 			styleSep.Render(tableSeparator(76)),
 		))
 
-		top := result.TopN(m.configPhase1Results, 20)
+		top := m.configPhase1Top20
 		for _, r := range top {
 			status := "healthy"
 			if withConfig {
@@ -3494,4 +3497,16 @@ func (m AppModel) saveStableIPs() string {
 	}
 	return fmt.Sprintf("saved %d stable IPs to stable_ips.txt", len(lines))
 }
+
+func (m *AppModel) updatePhase1Top20(r *result.Result) {
+	if r == nil || !r.IsHealthy() {
+		return
+	}
+	m.configPhase1Top20 = append(m.configPhase1Top20, r)
+	result.Sort(m.configPhase1Top20, result.SortByAvg)
+	if len(m.configPhase1Top20) > 20 {
+		m.configPhase1Top20 = m.configPhase1Top20[:20]
+	}
+}
+
 

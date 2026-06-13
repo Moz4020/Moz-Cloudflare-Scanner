@@ -141,7 +141,7 @@ func (w *LiveResultWriter) flush() error {
 
 func (w *LiveResultWriter) writeLockedThrottled() error {
 	w.pendingFlush++
-	if w.pendingFlush < 5 && time.Since(w.lastFlush) < 300*time.Millisecond {
+	if time.Since(w.lastFlush) < 1000*time.Millisecond {
 		return nil
 	}
 	return w.writeLockedNow()
