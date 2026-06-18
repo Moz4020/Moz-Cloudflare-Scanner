@@ -1,6 +1,7 @@
 package xraytest
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -8,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
-	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -104,28 +104,9 @@ func validateOnce(ctx context.Context, cfg *VLESSConfig, timeout time.Duration) 
 		return res
 	}
 
-	tmpFile, err := os.CreateTemp("", "xray-test-*.json")
-	if err != nil {
-		res.Error = fmt.Sprintf("create temp file: %v", err)
-		return res
-	}
-	defer os.Remove(tmpFile.Name())
-
-	if _, err := tmpFile.Write(configJSON); err != nil {
-		tmpFile.Close()
-		res.Error = fmt.Sprintf("write config: %v", err)
-		return res
-	}
-	tmpFile.Close()
-
-	tmpFile2, err := os.Open(tmpFile.Name())
-	if err != nil {
-		res.Error = fmt.Sprintf("reopen config: %v", err)
-		return res
-	}
-
-	jsonConfig, err := serial.DecodeJSONConfig(tmpFile2)
-	tmpFile2.Close()
+	// Decode straight from memory — no temp file. Avoids ~5 syscalls and a disk
+	// round-trip per candidate, which dominates Phase 2 cost on slow disks/VPS.
+	jsonConfig, err := serial.DecodeJSONConfig(bytes.NewReader(configJSON))
 	if err != nil {
 		res.Error = fmt.Sprintf("decode json config: %v", err)
 		return res
@@ -268,7 +249,7 @@ func waitForPort(port int, timeout time.Duration) bool {
 			conn.Close()
 			return true
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 	}
 	return false
 }

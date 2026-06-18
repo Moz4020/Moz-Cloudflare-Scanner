@@ -117,11 +117,7 @@ func Probe(ctx context.Context, ip net.IP, cfg Config) *result.Result {
 		case ModeTLS:
 			lat, tlsOk = probeTLS(ctx, ip, cfg.Port, sni, cfg.Timeout, cfg.InsecureSkipVerify)
 		case ModeHTTP:
-			var wsOk bool
-			lat, tlsOk, httpStatus, colo, throughput, wsOk = probeHTTP(ctx, ip, cfg.Port, sni, cfg.Timeout, cfg.SpeedBytes, cfg.InsecureSkipVerify, cfg.WebSocketHost, cfg.WebSocketPath, cfg.RequireWebSocket)
-			if wsOk {
-				r.WSOk = true
-			}
+			lat, tlsOk, httpStatus, colo, throughput = probeHTTP(ctx, ip, cfg.Port, sni, cfg.Timeout, cfg.SpeedBytes, cfg.InsecureSkipVerify)
 		}
 
 		r.Latencies[i] = lat
@@ -146,6 +142,21 @@ func Probe(ctx context.Context, ip net.IP, cfg Config) *result.Result {
 			case <-time.After(jitter):
 			}
 		}
+	}
+
+	// The WebSocket DPI hold is a property of the IP, not of an individual try
+	// (WSOk is OR-semantics across tries). Run it exactly once after the probe
+	// loop instead of on every try — for ws configs this roughly halves Phase 1
+	// time per IP without changing the result. We only run it once the IP has
+	// already proven it reaches the Cloudflare edge over HTTP, mirroring the
+	// gate that previously lived inside probeHTTP.
+	if cfg.Mode == ModeHTTP && shouldProbeWebSocket(cfg.RequireWebSocket) &&
+		ctx.Err() == nil && r.Colo != "" && r.HTTPStatus >= 200 && r.HTTPStatus < 400 {
+		sni := cfg.SNI
+		if sni == "" {
+			sni = "speed.cloudflare.com"
+		}
+		r.WSOk = probeWebSocket(ctx, ip, cfg.Port, sni, cfg.WebSocketHost, cfg.WebSocketPath, cfg.Timeout)
 	}
 
 	return r
@@ -199,8 +210,8 @@ func probeTLS(ctx context.Context, ip net.IP, port int, sni string, timeout time
 
 // probeHTTP fetches /cdn-cgi/trace to confirm the IP is a real Cloudflare edge
 // and to determine the colo identifier.
-func probeHTTP(ctx context.Context, ip net.IP, port int, sni string, timeout time.Duration, speedBytes int64, insecure bool, wsHost, wsPath string, requireWS bool) (
-	lat time.Duration, tlsOk bool, httpStatus int, colo string, throughput float64, wsOk bool,
+func probeHTTP(ctx context.Context, ip net.IP, port int, sni string, timeout time.Duration, speedBytes int64, insecure bool) (
+	lat time.Duration, tlsOk bool, httpStatus int, colo string, throughput float64,
 ) {
 	addr := fmt.Sprintf("%s:%d", ip.String(), port)
 
@@ -246,7 +257,7 @@ func probeHTTP(ctx context.Context, ip net.IP, port int, sni string, timeout tim
 	start := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, false, 0, "", 0, false
+		return 0, false, 0, "", 0
 	}
 	lat = time.Since(start)
 	defer resp.Body.Close()
@@ -260,13 +271,10 @@ func probeHTTP(ctx context.Context, ip net.IP, port int, sni string, timeout tim
 		colo = traceColo
 	}
 
-	if httpStatus >= 200 && httpStatus < 400 && colo != "" {
-		if speedBytes > 0 {
-			throughput = probeDownload(ctx, ip, port, timeout, speedBytes)
-		}
-		if shouldProbeWebSocket(requireWS) {
-			wsOk = probeWebSocket(ctx, ip, port, sni, wsHost, wsPath, timeout)
-		}
+	// The WebSocket DPI hold is now run once per IP by the caller (Probe) after
+	// the try loop, so it is no longer triggered here.
+	if httpStatus >= 200 && httpStatus < 400 && colo != "" && speedBytes > 0 {
+		throughput = probeDownload(ctx, ip, port, timeout, speedBytes)
 	}
 
 	return

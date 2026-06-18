@@ -5,7 +5,7 @@ script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
 sh "$script_dir/build-linux.sh"
 
-version="0.1.3"
+version="0.1.3.5"
 version_file_friendly="$(printf '%s' "$version" | tr ' ' '-')"
 dist="$script_dir/dist"
 package_dir="$dist/release-package-linux"
