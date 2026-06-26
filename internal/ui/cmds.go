@@ -330,22 +330,12 @@ func configProbeFromURL(rawURL string, timeout time.Duration) (prober.Config, er
 
 	probeCfg := prober.Config{
 		Port:               cfg.Port,
-		Mode:               prober.ModeTLS,
-		Tries:              1,
+		Mode:               prober.ModeHTTP,
+		Tries:              2,
 		Timeout:            timeout,
 		SNI:                sni,
 		InsecureSkipVerify: true,
-	}
-	if cfg.Network == "ws" {
-		probeCfg.Mode = prober.ModeHTTP
-		probeCfg.Tries = 2
-		probeCfg.AcceptCFHTTPError = true
-		probeCfg.WebSocketHost = cfg.Host
-		probeCfg.WebSocketPath = cfg.Path
-		probeCfg.RequireWebSocket = true
-	} else if cfg.Network == "xhttp" || cfg.Network == "splithttp" || cfg.Network == "grpc" {
-		probeCfg.Mode = prober.ModeHTTP
-		probeCfg.AcceptCFHTTPError = true
+		AcceptCFHTTPError:  true,
 	}
 	return probeCfg, nil
 }
@@ -633,7 +623,7 @@ func runStabilityTest(tries int, interval time.Duration, workers int, defaultPor
 								return
 							}
 							ep := t.endpoint
-							
+
 							r := &result.Result{
 								IP:        ep.IP,
 								Port:      ep.Port,
@@ -679,4 +669,3 @@ func runStabilityTest(tries int, interval time.Duration, workers int, defaultPor
 		return StabilityStartMsg{Total: len(endpoints)}
 	}
 }
-

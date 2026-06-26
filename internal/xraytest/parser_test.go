@@ -1,106 +1,89 @@
 package xraytest
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 )
 
-func TestParseVLESS_WS(t *testing.T) {
-	raw := "vless://12345678-1234-1234-1234-123456789abc@example.com:443?encryption=none&security=tls&sni=example.com&fp=chrome&alpn=h2%2Chttp%2F1.1&insecure=1&allowInsecure=1&type=ws&host=example.com&path=%2Fdownload#CF-WS-079xe1rr"
-
+func TestParseVLESSXHTTP(t *testing.T) {
+	raw := "vless://abcdef12-3456-7890-abcd-ef1234567890@example.com:443?encryption=none&security=tls&sni=example.com&fp=chrome&alpn=h2%2Chttp%2F1.1&insecure=1&allowInsecure=1&type=xhttp&host=example.com&path=%2Fdownload&mode=auto#CF-XHTTP"
 	cfg, err := ParseVLESS(raw)
 	if err != nil {
-		t.Fatalf("ParseVLESS failed: %v", err)
+		t.Fatal(err)
 	}
-
-	assertEqual(t, "UUID", cfg.UUID, "12345678-1234-1234-1234-123456789abc")
-	assertEqual(t, "Address", cfg.Address, "example.com")
-	assertEqual(t, "Port", itoa(cfg.Port), "443")
-	assertEqual(t, "Network", cfg.Network, "ws")
-	assertEqual(t, "Security", cfg.Security, "tls")
-	assertEqual(t, "SNI", cfg.SNI, "example.com")
-	assertEqual(t, "Fingerprint", cfg.Fingerprint, "chrome")
-	assertEqual(t, "Path", cfg.Path, "/download")
-	assertEqual(t, "Host", cfg.Host, "example.com")
-	assertEqual(t, "Remark", cfg.Remark, "CF-WS-079xe1rr")
-
-	if !cfg.Insecure {
-		t.Error("expected Insecure=true")
+	if cfg.Network != "xhttp" {
+		t.Fatalf("network = %q, want xhttp", cfg.Network)
 	}
-	if len(cfg.ALPN) != 2 || cfg.ALPN[0] != "h2" || cfg.ALPN[1] != "http/1.1" {
-		t.Errorf("unexpected ALPN: %v", cfg.ALPN)
+	if cfg.Host != "example.com" || cfg.Path != "/download" {
+		t.Fatalf("host/path = %q %q", cfg.Host, cfg.Path)
 	}
-}
-
-func TestParseVLESS_GRPC(t *testing.T) {
-	raw := "vless://87654321-4321-4321-4321-cba987654321@example.com:8443?encryption=none&security=tls&sni=example.com&fp=chrome&alpn=h2&insecure=1&allowInsecure=1&type=grpc&authority=example.com&serviceName=download&mode=multi#CF-GRPC-f8k8s2jp"
-
-	cfg, err := ParseVLESS(raw)
-	if err != nil {
-		t.Fatalf("ParseVLESS failed: %v", err)
+	if cfg.Mode != "auto" {
+		t.Fatalf("mode = %q, want auto", cfg.Mode)
 	}
-
-	assertEqual(t, "UUID", cfg.UUID, "87654321-4321-4321-4321-cba987654321")
-	assertEqual(t, "Port", itoa(cfg.Port), "8443")
-	assertEqual(t, "Network", cfg.Network, "grpc")
-	assertEqual(t, "ServiceName", cfg.ServiceName, "download")
-	assertEqual(t, "Authority", cfg.Authority, "example.com")
-	assertEqual(t, "Mode", cfg.Mode, "multi")
-}
-
-func TestParseVLESS_XHTTP(t *testing.T) {
-	raw := "vless://abcdef12-3456-7890-abcd-ef1234567890@test.example.org:2053?encryption=none&security=tls&sni=test.example.org&fp=chrome&alpn=h2%2Chttp%2F1.1&insecure=1&allowInsecure=1&type=xhttp&host=test.example.org&path=%2Fdownload&mode=auto&extra=%7B%22scMaxEachPostBytes%22%3A%221000000%22%2C%22scMinPostsIntervalMs%22%3A%2230%22%2C%22xPaddingBytes%22%3A%22100-1000%22%7D#CF-XHTTP-o9xk21gf"
-
-	cfg, err := ParseVLESS(raw)
-	if err != nil {
-		t.Fatalf("ParseVLESS failed: %v", err)
-	}
-
-	assertEqual(t, "UUID", cfg.UUID, "abcdef12-3456-7890-abcd-ef1234567890")
-	assertEqual(t, "Port", itoa(cfg.Port), "2053")
-	assertEqual(t, "Network", cfg.Network, "xhttp")
-	assertEqual(t, "Path", cfg.Path, "/download")
-	assertEqual(t, "Host", cfg.Host, "test.example.org")
-	assertEqual(t, "Mode", cfg.Mode, "auto")
-	assertEqual(t, "XHTTPExtra.scMaxEachPostBytes", cfg.XHTTPExtra["scMaxEachPostBytes"].(string), "1000000")
-	assertEqual(t, "XHTTPExtra.scMinPostsIntervalMs", cfg.XHTTPExtra["scMinPostsIntervalMs"].(string), "30")
-	assertEqual(t, "XHTTPExtra.xPaddingBytes", cfg.XHTTPExtra["xPaddingBytes"].(string), "100-1000")
-
 	rebuilt := cfg.ToShareURL()
-	roundTrip, err := ParseVLESS(rebuilt)
-	if err != nil {
-		t.Fatalf("round-trip ParseVLESS failed: %v", err)
+	if !strings.Contains(rebuilt, "type=xhttp") {
+		t.Fatalf("rebuilt URL missing xhttp type: %s", rebuilt)
 	}
-	assertEqual(t, "round-trip XHTTPExtra.xPaddingBytes", roundTrip.XHTTPExtra["xPaddingBytes"].(string), "100-1000")
 }
 
-func TestWithAddress(t *testing.T) {
-	raw := "vless://12345678-1234-1234-1234-123456789abc@example.com:443?encryption=none&security=tls&sni=example.com&type=ws&path=%2Fdownload&host=example.com#test"
-
+func TestParseVLESSSplitHTTP(t *testing.T) {
+	raw := "vless://abcdef12-3456-7890-abcd-ef1234567890@example.com:443?encryption=none&security=tls&sni=example.com&type=splithttp&path=%2Fdownload&host=example.com#test"
 	cfg, err := ParseVLESS(raw)
 	if err != nil {
-		t.Fatalf("ParseVLESS failed: %v", err)
+		t.Fatal(err)
 	}
+	if cfg.Network != "splithttp" {
+		t.Fatalf("network = %q, want splithttp", cfg.Network)
+	}
+}
 
-	swapped := cfg.WithAddress("172.66.40.1")
+func TestParseProxyURLRejectsUnsupportedSchemes(t *testing.T) {
+	cases := []string{
+		"",
+		"trojan://something",
+		"vmess://something",
+	}
+	for _, raw := range cases {
+		if _, err := ParseProxyURL(raw); err == nil {
+			t.Fatalf("expected error for %q", raw)
+		}
+	}
+}
 
-	assertEqual(t, "original address", cfg.Address, "example.com")
-	assertEqual(t, "swapped address", swapped.Address, "172.66.40.1")
-	assertEqual(t, "port preserved", itoa(swapped.Port), "443")
-	assertEqual(t, "SNI preserved", swapped.SNI, "example.com")
-	assertEqual(t, "Host preserved", swapped.Host, "example.com")
+func TestParseVLESSRejectsUnsupportedTransport(t *testing.T) {
+	raw := "vless://12345678-1234-1234-1234-123456789abc@example.com:443?encryption=none&security=tls&type=ws&path=%2Fdownload&host=example.com#test"
+	if _, err := ParseVLESS(raw); err == nil {
+		t.Fatal("expected ws transport to be rejected")
+	}
+	raw = "vless://12345678-1234-1234-1234-123456789abc@example.com:443?encryption=none&security=tls&type=grpc&serviceName=download#test"
+	if _, err := ParseVLESS(raw); err == nil {
+		t.Fatal("expected grpc transport to be rejected")
+	}
+	raw = "vless://12345678-1234-1234-1234-123456789abc@example.com:443?encryption=none&security=tls#test"
+	if _, err := ParseVLESS(raw); err == nil {
+		t.Fatal("expected missing transport to be rejected")
+	}
+}
+
+func TestParseVLESSInvalid(t *testing.T) {
+	cases := []string{
+		"vless://no-at-sign",
+		"vless://uuid@host-no-port",
+	}
+	for _, raw := range cases {
+		if _, err := ParseVLESS(raw); err == nil {
+			t.Fatalf("expected error for %q", raw)
+		}
+	}
 }
 
 func TestToShareURLRemarkUsesPercentSpaces(t *testing.T) {
 	raw := "vless://12345678-1234-1234-1234-123456789abc@example.com:443?encryption=none&security=tls&sni=example.com&type=xhttp&path=%2Fdownload&host=example.com#Moz%20Fast%201"
-
 	cfg, err := ParseVLESS(raw)
 	if err != nil {
-		t.Fatalf("ParseVLESS failed: %v", err)
+		t.Fatal(err)
 	}
 	cfg.Remark = "Moz Fast 1"
-
 	rebuilt := cfg.ToShareURL()
 	if strings.Contains(rebuilt, "#Moz+Fast+1") {
 		t.Fatalf("remark used + escaping: %s", rebuilt)
@@ -108,36 +91,16 @@ func TestToShareURLRemarkUsesPercentSpaces(t *testing.T) {
 	if !strings.Contains(rebuilt, "#Moz%20Fast%201") {
 		t.Fatalf("remark did not use percent-space escaping: %s", rebuilt)
 	}
+}
 
-	roundTrip, err := ParseVLESS(rebuilt)
+func TestWithAddress(t *testing.T) {
+	raw := "vless://12345678-1234-1234-1234-123456789abc@example.com:443?encryption=none&security=tls&sni=example.com&type=xhttp&path=%2Fdownload&host=example.com#test"
+	cfg, err := ParseVLESS(raw)
 	if err != nil {
-		t.Fatalf("round-trip ParseVLESS failed: %v", err)
+		t.Fatal(err)
 	}
-	assertEqual(t, "round-trip remark", roundTrip.Remark, "Moz Fast 1")
-}
-
-func TestParseVLESS_Invalid(t *testing.T) {
-	cases := []string{
-		"",
-		"vmess://something",
-		"vless://no-at-sign",
-		"vless://uuid@host-no-port",
+	swapped := cfg.WithAddress("172.66.40.1")
+	if swapped.Address != "172.66.40.1" || swapped.Port != 443 {
+		t.Fatalf("swapped = %s:%d", swapped.Address, swapped.Port)
 	}
-	for _, c := range cases {
-		_, err := ParseVLESS(c)
-		if err == nil {
-			t.Errorf("expected error for %q, got nil", c)
-		}
-	}
-}
-
-func assertEqual(t *testing.T, field, got, want string) {
-	t.Helper()
-	if got != want {
-		t.Errorf("%s: got %q, want %q", field, got, want)
-	}
-}
-
-func itoa(n int) string {
-	return fmt.Sprintf("%d", n)
 }

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -22,6 +23,10 @@ var portCounter atomic.Int32
 
 const (
 	traceProbeURL        = "https://cp.cloudflare.com/cdn-cgi/trace"
+	payloadProbeURL      = "https://speed.cloudflare.com/__down?bytes=262144"
+	validationAttempts   = 3
+	validationMinSuccess = 2
+	payloadBytes         = 256 * 1024
 	connectivityTimeout  = 5 * time.Second
 	transportTimeout     = 3 * time.Second
 )
@@ -40,27 +45,68 @@ type ValidationResult struct {
 	IP         string
 	Port       int
 	Success    bool
-	Latency    time.Duration // time to first byte
+	Latency    time.Duration // median successful time to first byte
 	Throughput float64       // bytes/sec for download test
 	BytesRecv  int64
 	Error      string
-	Transport  string // ws, grpc, xhttp
-	Retries    int    // how many attempts were needed
+	Transport  string // xhttp or splithttp
+	Attempts   int
+	Successes  int
+	Retries    int // compatibility: failed attempts before enough successes
 }
 
-// ValidateConfig starts an xray instance with the given config, sends test
-// traffic through it, and returns the result. Retries once on failure.
+// ValidateConfig validates an XHTTP endpoint with repeated xray-confirmed
+// trace and payload checks. An endpoint is working only after 2 of 3 successes.
 func ValidateConfig(ctx context.Context, cfg *VLESSConfig, timeout time.Duration) *ValidationResult {
-	res := validateOnce(ctx, cfg, timeout)
-	if !res.Success && shouldRetryValidation(ctx, res.Error) {
-		// Retry once — DPI is flaky
-		time.Sleep(500 * time.Millisecond)
-		res2 := validateOnce(ctx, cfg, timeout)
-		res2.Retries = 1
-		if res2.Success {
-			return res2
+	res := &ValidationResult{
+		IP:        cfg.Address,
+		Port:      cfg.Port,
+		Transport: cfg.Network,
+		Attempts:  validationAttempts,
+	}
+
+	var latencies []time.Duration
+	var lastErr string
+	attempts := 0
+	for attempt := 0; attempt < validationAttempts; attempt++ {
+		if ctx.Err() != nil {
+			lastErr = ctx.Err().Error()
+			break
 		}
-		res.Retries = 1
+		attempts++
+		once := validateOnce(ctx, cfg, timeout)
+		if once.Success {
+			res.Successes++
+			if once.Latency > 0 {
+				latencies = append(latencies, once.Latency)
+			}
+			res.BytesRecv += once.BytesRecv
+			if once.Throughput > 0 {
+				res.Throughput += once.Throughput
+			}
+		} else if once.Error != "" {
+			lastErr = once.Error
+		}
+		if res.Successes >= validationMinSuccess {
+			break
+		}
+		if attempt < validationAttempts-1 && shouldRetryValidation(ctx, lastErr) {
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
+
+	res.Attempts = attempts
+	res.Retries = maxInt(res.Attempts-1, 0)
+	res.Success = res.Successes >= validationMinSuccess
+	res.Latency = medianDuration(latencies)
+	if res.Successes > 0 && res.Throughput > 0 {
+		res.Throughput /= float64(res.Successes)
+	}
+	if !res.Success {
+		if lastErr == "" {
+			lastErr = fmt.Sprintf("only %d/%d xhttp checks passed", res.Successes, validationAttempts)
+		}
+		res.Error = lastErr
 	}
 	return res
 }
@@ -94,6 +140,7 @@ func validateOnce(ctx context.Context, cfg *VLESSConfig, timeout time.Duration) 
 		IP:        cfg.Address,
 		Port:      cfg.Port,
 		Transport: cfg.Network,
+		Attempts:  1,
 	}
 
 	socksPort := nextPort()
@@ -148,7 +195,16 @@ func validateOnce(ctx context.Context, cfg *VLESSConfig, timeout time.Duration) 
 		return res
 	}
 
+	bytesRecv, throughput, payloadErr := proxyPayloadCheck(testCtx, proxyURL)
+	res.BytesRecv = bytesRecv
+	res.Throughput = throughput
+	if payloadErr != nil {
+		res.Error = fmt.Sprintf("payload: %v", payloadErr)
+		return res
+	}
+
 	res.Success = true
+	res.Successes = 1
 	return res
 }
 
@@ -202,6 +258,45 @@ func proxyConnectivityCheck(ctx context.Context, proxyAddr string) (bool, time.D
 	return true, latency, nil
 }
 
+func proxyPayloadCheck(ctx context.Context, proxyAddr string) (int64, float64, error) {
+	clientTimeout := minDuration(clientTimeoutForContext(ctx, connectivityTimeout), connectivityTimeout)
+	transport := proxyTransport(proxyAddr, minDuration(clientTimeout, transportTimeout))
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   clientTimeout,
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, payloadProbeURL, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	req.Header.Set("User-Agent", "moz-cloudflare-scanner/1.0")
+
+	start := time.Now()
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
+		return 0, 0, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	n, err := io.Copy(io.Discard, io.LimitReader(resp.Body, payloadBytes))
+	if err != nil {
+		return n, 0, err
+	}
+	if n <= 0 {
+		return 0, 0, fmt.Errorf("no payload bytes received")
+	}
+	elapsed := time.Since(start).Seconds()
+	if elapsed <= 0 {
+		return n, 0, nil
+	}
+	return n, float64(n) / elapsed, nil
+}
+
 func proxyTransport(proxyAddr string, timeout time.Duration) *http.Transport {
 	if timeout <= 0 {
 		timeout = transportTimeout
@@ -235,6 +330,22 @@ func minDuration(a, b time.Duration) time.Duration {
 		return a
 	}
 	if a < b {
+		return a
+	}
+	return b
+}
+
+func medianDuration(values []time.Duration) time.Duration {
+	if len(values) == 0 {
+		return 0
+	}
+	sorted := append([]time.Duration(nil), values...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	return sorted[len(sorted)/2]
+}
+
+func maxInt(a, b int) int {
+	if a > b {
 		return a
 	}
 	return b

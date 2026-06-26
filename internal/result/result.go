@@ -14,8 +14,6 @@ type Result struct {
 	ProbeMode   string          // tcp | tls | http
 	Latencies   []time.Duration // per-try latencies; 0 = failed try
 	TLSOk       bool
-	WSOk        bool // WebSocket connection survived hold test
-	RequireWS   bool // true when WebSocket success is part of health criteria
 	HTTPStatus  int
 	Colo        string
 	Throughput  float64 // bytes/sec, 0 if not measured
@@ -119,9 +117,6 @@ func (r *Result) IsHealthy() bool {
 			return false
 		}
 		if r.SpeedTested && r.Throughput <= 0 {
-			return false
-		}
-		if r.RequireWS && !r.WSOk {
 			return false
 		}
 		return true
@@ -260,9 +255,6 @@ func compareResults(a, b *Result, by SortBy) int {
 	}
 
 	if cmp := cmpBool(a.TLSOk, b.TLSOk); cmp != 0 {
-		return cmp
-	}
-	if cmp := cmpBool(a.WSOk, b.WSOk); cmp != 0 {
 		return cmp
 	}
 	if cmp := cmpString(a.IP.String(), b.IP.String()); cmp != 0 {

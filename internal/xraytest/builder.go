@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// BuildXrayConfig generates a minimal xray-core JSON config from a VLESSConfig.
+// BuildXrayConfig generates a minimal xray-core JSON config from a VLESS XHTTP config.
 // It creates a SOCKS inbound on the given port and a VLESS outbound.
 func BuildXrayConfig(cfg *VLESSConfig, socksPort int) ([]byte, error) {
 	config := map[string]interface{}{
@@ -46,9 +46,6 @@ func BuildXrayConfig(cfg *VLESSConfig, socksPort int) ([]byte, error) {
 }
 
 func buildOutbound(cfg *VLESSConfig) map[string]interface{} {
-	if cfg.Protocol == "trojan" {
-		return buildTrojanOutbound(cfg)
-	}
 	return buildVLESSOutbound(cfg)
 }
 
@@ -72,23 +69,6 @@ func buildVLESSOutbound(cfg *VLESSConfig) map[string]interface{} {
 					"address": cfg.Address,
 					"port":    cfg.Port,
 					"users":   users,
-				},
-			},
-		},
-		"streamSettings": buildStreamSettings(cfg),
-	}
-}
-
-func buildTrojanOutbound(cfg *VLESSConfig) map[string]interface{} {
-	return map[string]interface{}{
-		"tag":      "proxy",
-		"protocol": "trojan",
-		"settings": map[string]interface{}{
-			"servers": []map[string]interface{}{
-				{
-					"address":  cfg.Address,
-					"port":     cfg.Port,
-					"password": cfg.Password,
 				},
 			},
 		},
@@ -120,48 +100,19 @@ func buildStreamSettings(cfg *VLESSConfig) map[string]interface{} {
 		stream["tlsSettings"] = tls
 	}
 
-	// Transport settings
-	switch cfg.Network {
-	case "ws":
-		ws := map[string]interface{}{
-			"path": cfg.Path,
-		}
-		// xray-core expects headers as a map, not a top-level "host" field.
-		// Using the correct format ensures the Host header reaches the CDN origin.
-		if cfg.Host != "" {
-			ws["headers"] = map[string]interface{}{
-				"Host": cfg.Host,
-			}
-		}
-		stream["wsSettings"] = ws
-
-	case "grpc":
-		grpc := map[string]interface{}{
-			"serviceName": cfg.ServiceName,
-		}
-		if cfg.Authority != "" {
-			grpc["authority"] = cfg.Authority
-		}
-		if cfg.Mode == "multi" {
-			grpc["multiMode"] = true
-		}
-		stream["grpcSettings"] = grpc
-
-	case "xhttp", "splithttp":
-		xhttp := map[string]interface{}{
-			"path": cfg.Path,
-		}
-		if cfg.Host != "" {
-			xhttp["host"] = cfg.Host
-		}
-		if cfg.Mode != "" {
-			xhttp["mode"] = cfg.Mode
-		}
-		if len(cfg.XHTTPExtra) > 0 {
-			xhttp["extra"] = cfg.XHTTPExtra
-		}
-		stream["xhttpSettings"] = xhttp
+	xhttp := map[string]interface{}{
+		"path": cfg.Path,
 	}
+	if cfg.Host != "" {
+		xhttp["host"] = cfg.Host
+	}
+	if cfg.Mode != "" {
+		xhttp["mode"] = cfg.Mode
+	}
+	if len(cfg.XHTTPExtra) > 0 {
+		xhttp["extra"] = cfg.XHTTPExtra
+	}
+	stream["xhttpSettings"] = xhttp
 
 	return stream
 }

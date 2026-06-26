@@ -3,7 +3,7 @@ $ErrorActionPreference = "Stop"
 $Binary = "moz-cloudflare-scanner"
 $Module = "github.com/moz/moz-cloudflare-scanner"
 $Cmd = "./cmd/moz-cloudflare-scanner"
-$Version = "0.1.3.5"
+$Version = "1.0"
 $Commit = "none"
 $BuildDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
@@ -18,6 +18,7 @@ New-Item -ItemType Directory -Force -Path "dist" | Out-Null
 
 $ldflags = @(
     "-s -w",
+    "-X $Module/pkg/version.Version=$Version",
     "-X $Module/pkg/version.Commit=$Commit",
     "-X $Module/pkg/version.BuildDate=$BuildDate",
     "-X $Module/pkg/version.BuiltBy=build.ps1"

@@ -33,9 +33,6 @@ type Config struct {
 	SNI                string // empty = rotate automatically
 	SpeedBytes         int64  // optional HTTP download sample size; 0 disables it
 	InsecureSkipVerify bool   // skip TLS cert verification (use for Phase 1 where Phase 2 validates properly)
-	WebSocketHost      string // empty = SNI
-	WebSocketPath      string // empty = /
-	RequireWebSocket   bool   // require a successful WebSocket probe for HTTP health
 	AcceptCFHTTPError  bool   // accept any Cloudflare HTTP response when xray will validate next
 }
 
@@ -87,7 +84,6 @@ func Probe(ctx context.Context, ip net.IP, cfg Config) *result.Result {
 		ProbeMode: cfg.Mode.String(),
 		Timestamp: time.Now(),
 		Latencies: make([]time.Duration, cfg.Tries),
-		RequireWS: cfg.RequireWebSocket,
 		AcceptCF:  cfg.AcceptCFHTTPError,
 	}
 	if cfg.Mode == ModeHTTP && cfg.SpeedBytes > 0 {
@@ -142,21 +138,6 @@ func Probe(ctx context.Context, ip net.IP, cfg Config) *result.Result {
 			case <-time.After(jitter):
 			}
 		}
-	}
-
-	// The WebSocket DPI hold is a property of the IP, not of an individual try
-	// (WSOk is OR-semantics across tries). Run it exactly once after the probe
-	// loop instead of on every try — for ws configs this roughly halves Phase 1
-	// time per IP without changing the result. We only run it once the IP has
-	// already proven it reaches the Cloudflare edge over HTTP, mirroring the
-	// gate that previously lived inside probeHTTP.
-	if cfg.Mode == ModeHTTP && shouldProbeWebSocket(cfg.RequireWebSocket) &&
-		ctx.Err() == nil && r.Colo != "" && r.HTTPStatus >= 200 && r.HTTPStatus < 400 {
-		sni := cfg.SNI
-		if sni == "" {
-			sni = "speed.cloudflare.com"
-		}
-		r.WSOk = probeWebSocket(ctx, ip, cfg.Port, sni, cfg.WebSocketHost, cfg.WebSocketPath, cfg.Timeout)
 	}
 
 	return r
@@ -271,107 +252,11 @@ func probeHTTP(ctx context.Context, ip net.IP, port int, sni string, timeout tim
 		colo = traceColo
 	}
 
-	// The WebSocket DPI hold is now run once per IP by the caller (Probe) after
-	// the try loop, so it is no longer triggered here.
 	if httpStatus >= 200 && httpStatus < 400 && colo != "" && speedBytes > 0 {
 		throughput = probeDownload(ctx, ip, port, timeout, speedBytes)
 	}
 
 	return
-}
-
-func shouldProbeWebSocket(requireWS bool) bool {
-	return requireWS
-}
-
-// probeWebSocket tests whether WebSocket-grade TLS connections reach the
-// Cloudflare edge without being killed by DPI. It does two things:
-//
-//  1. Holds the TLS connection idle for 2 s before sending any data.
-//     Some DPI systems RST connections that look like long-lived TLS tunnels
-//     without early data — if the connection dies during the idle hold, WSOk
-//     is false.
-//
-//  2. Sends a WebSocket upgrade request and checks that any HTTP response
-//     arrives (even 400/404). If DPI drops the connection before CF can
-//     respond, WSOk is false.
-//
-// TLS cert verification is skipped here because the main probeHTTP call
-// already verified the certificate for this IP.
-func probeWebSocket(ctx context.Context, ip net.IP, port int, sni, host, path string, timeout time.Duration) bool {
-	addr := fmt.Sprintf("%s:%d", ip.String(), port)
-	if host == "" {
-		host = sni
-	}
-	path = normalizeWSPath(path)
-
-	dialer := &net.Dialer{Timeout: timeout / 3}
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
-	if err != nil {
-		return false
-	}
-	setLingerZero(conn)
-	defer conn.Close()
-
-	tlsConn := tls.Client(conn, &tls.Config{
-		ServerName:         sni,
-		MinVersion:         tls.VersionTLS12,
-		InsecureSkipVerify: true, // cert already verified in probeHTTP
-	})
-	if err := tlsConn.HandshakeContext(ctx); err != nil {
-		return false
-	}
-
-	// Phase 1: idle hold — detect DPI that RSTs long-lived TLS connections
-	// before any application data is exchanged.
-	tlsConn.SetDeadline(time.Now().Add(2 * time.Second))
-	oneByte := make([]byte, 1)
-	if _, err := tlsConn.Read(oneByte); err != nil {
-		// A timeout here is EXPECTED (server speaks first only after WS upgrade).
-		// Any other error (RST, EOF) means the connection was killed while idle.
-		if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
-			return false
-		}
-	}
-
-	// Phase 2: send WebSocket upgrade and verify CF responds.
-	// If DPI RSTs connections containing WS upgrade headers, we won't get a
-	// response — returning false signals that WS traffic is DPI-blocked.
-	wsReq := fmt.Sprintf(
-		"GET %s HTTP/1.1\r\n"+
-			"Host: %s\r\n"+
-			"Upgrade: websocket\r\n"+
-			"Connection: Upgrade\r\n"+
-			"Sec-WebSocket-Key: c2VucGFpc2Nhbm5lcg==\r\n"+
-			"Sec-WebSocket-Version: 13\r\n"+
-			"\r\n", path, host)
-
-	tlsConn.SetDeadline(time.Now().Add(timeout / 2))
-	if _, err := tlsConn.Write([]byte(wsReq)); err != nil {
-		return false
-	}
-
-	// Read the first chunk of the response. CF will answer with at least an
-	// HTTP status line (e.g. "HTTP/1.1 400 Bad Request"). If we see "HTTP/",
-	// the WS upgrade reached CF — the connection is DPI-permissive.
-	respBuf := make([]byte, 1024)
-	tlsConn.SetDeadline(time.Now().Add(timeout / 3))
-	n, err := tlsConn.Read(respBuf)
-	if err != nil || n == 0 {
-		return false
-	}
-
-	return strings.Contains(string(respBuf[:n]), "HTTP/")
-}
-
-func normalizeWSPath(path string) string {
-	if path == "" {
-		return "/"
-	}
-	if !strings.HasPrefix(path, "/") {
-		return "/" + path
-	}
-	return path
 }
 
 // probeDownload fetches a small sample from speed.cloudflare.com while forcing

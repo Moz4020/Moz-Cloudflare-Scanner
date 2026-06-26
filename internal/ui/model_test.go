@@ -60,7 +60,7 @@ func TestConfigOptionalShowsPhase2WorkerCap(t *testing.T) {
 
 func TestResolvePhase1OptionsUsesRandomCloudflareDefaults(t *testing.T) {
 	m := NewApp("test")
-	m.configURL = "vless://12345678-1234-1234-1234-123456789abc@example.com:443?encryption=none&security=tls&type=ws&host=example.com&path=%2F#test"
+	m.configURL = "vless://12345678-1234-1234-1234-123456789abc@example.com:443?encryption=none&security=tls&type=xhttp&host=example.com&path=%2F#test"
 	m.configCountIdx = 2
 
 	opts := m.resolvePhase1Options()
@@ -92,7 +92,7 @@ func TestResolvePhase1OptionsFromFile(t *testing.T) {
 
 func TestResolveConfigPortsMultiSelect(t *testing.T) {
 	m := NewApp("test")
-	m.configURL = "vless://12345678-1234-1234-1234-123456789abc@example.com:443?encryption=none&security=tls&type=ws&host=example.com&path=%2F#test"
+	m.configURL = "vless://12345678-1234-1234-1234-123456789abc@example.com:443?encryption=none&security=tls&type=xhttp&host=example.com&path=%2F#test"
 	m.configSelectedPorts = map[int]bool{443: true, 8443: true}
 
 	got := m.resolveConfigPorts()
@@ -285,16 +285,16 @@ func TestWorkingEndpointsKeepsFastestDuplicate(t *testing.T) {
 	}
 }
 
-func TestVisibleValidationRowsFinishedShowsFastestWorkingFirst(t *testing.T) {
+func TestVisibleValidationRowsFinishedPrefersStableWorkingResults(t *testing.T) {
 	rows := visibleValidationRows([]*xraytest.ValidationResult{
 		{IP: "104.18.1.3", Port: 443, Success: false, Error: "failed"},
-		{IP: "104.18.1.2", Port: 443, Success: true, Latency: 180 * time.Millisecond},
-		{IP: "104.18.1.1", Port: 443, Success: true, Latency: 70 * time.Millisecond},
+		{IP: "104.18.1.2", Port: 443, Success: true, Successes: 3, Attempts: 3, Throughput: 200 * 1024, Latency: 180 * time.Millisecond},
+		{IP: "104.18.1.1", Port: 443, Success: true, Successes: 2, Attempts: 3, Throughput: 900 * 1024, Latency: 70 * time.Millisecond},
 	}, 3, true)
 	if len(rows) != 3 {
 		t.Fatalf("rows = %d, want 3", len(rows))
 	}
-	if rows[0].IP != "104.18.1.1" || rows[1].IP != "104.18.1.2" {
+	if rows[0].IP != "104.18.1.2" || rows[1].IP != "104.18.1.1" {
 		t.Fatalf("finished rows order = %v", rows)
 	}
 }
@@ -676,17 +676,17 @@ func TestSortStabilityResults(t *testing.T) {
 	r2 := &result.Result{
 		IP:        net.ParseIP("1.1.1.2"),
 		Port:      443,
-		Latencies: []time.Duration{100 * time.Millisecond, 150 * time.Millisecond, 50 * time.Millisecond},  // 0% loss, some jitter, 100ms avg
+		Latencies: []time.Duration{100 * time.Millisecond, 150 * time.Millisecond, 50 * time.Millisecond}, // 0% loss, some jitter, 100ms avg
 	}
 	r3 := &result.Result{
 		IP:        net.ParseIP("1.1.1.3"),
 		Port:      443,
-		Latencies: []time.Duration{0, 100 * time.Millisecond, 100 * time.Millisecond},                  // 33.3% loss, 100ms avg
+		Latencies: []time.Duration{0, 100 * time.Millisecond, 100 * time.Millisecond}, // 33.3% loss, 100ms avg
 	}
 	r4 := &result.Result{
 		IP:        net.ParseIP("1.1.1.4"),
 		Port:      443,
-		Latencies: []time.Duration{50 * time.Millisecond, 50 * time.Millisecond, 50 * time.Millisecond},  // 0% loss, 0ms jitter, 50ms avg
+		Latencies: []time.Duration{50 * time.Millisecond, 50 * time.Millisecond, 50 * time.Millisecond}, // 0% loss, 0ms jitter, 50ms avg
 	}
 	r5 := &result.Result{
 		IP:        net.ParseIP("1.1.1.5"),
@@ -717,7 +717,7 @@ func TestSortStabilityResults(t *testing.T) {
 func TestConfigurationProfiles(t *testing.T) {
 	// 1. Check IP scanner presets
 	m := NewApp("test")
-	
+
 	// Default should be Balanced (1)
 	if m.configProfileIdx != 1 {
 		t.Fatalf("expected default configProfileIdx = 1, got %d", m.configProfileIdx)
@@ -778,5 +778,3 @@ func TestConfigurationProfiles(t *testing.T) {
 		t.Errorf("expected stability profile to auto-detect Balanced (1), got %d", m.stabilityProfileIdx)
 	}
 }
-
-

@@ -8,32 +8,24 @@ import (
 	"strings"
 )
 
-// VLESSConfig holds parsed parameters from a VLESS or Trojan share URL.
-// Check the Protocol field to know which type this is.
+// VLESSConfig holds parsed parameters from a VLESS XHTTP share URL.
 type VLESSConfig struct {
-	// Protocol is "vless" or "trojan".
 	Protocol string
 
-	// VLESS-specific
 	UUID       string
 	Encryption string
 	Flow       string
-
-	// Trojan-specific
-	Password string
 
 	// Common
 	Address string
 	Port    int
 
-	// Transport
-	Network     string // ws, grpc, xhttp, tcp
-	Path        string
-	Host        string
-	ServiceName string // gRPC
-	Mode        string // gRPC multi/gun, xhttp auto
-	Authority   string // gRPC
-	XHTTPExtra  map[string]interface{}
+	// XHTTP transport
+	Network    string // xhttp or splithttp
+	Path       string
+	Host       string
+	Mode       string
+	XHTTPExtra map[string]interface{}
 
 	// TLS
 	Security    string // tls, reality, none
@@ -46,18 +38,13 @@ type VLESSConfig struct {
 	Remark string
 }
 
-// ParseProxyURL auto-detects the protocol (vless:// or trojan://) and parses
-// the share URL into a VLESSConfig. Returns an error if the scheme is unknown.
+// ParseProxyURL parses a VLESS XHTTP share URL.
 func ParseProxyURL(raw string) (*VLESSConfig, error) {
 	raw = strings.TrimSpace(raw)
-	switch {
-	case strings.HasPrefix(raw, "vless://"):
-		return ParseVLESS(raw)
-	case strings.HasPrefix(raw, "trojan://"):
-		return ParseTrojan(raw)
-	default:
-		return nil, fmt.Errorf("unsupported URL scheme — must start with vless:// or trojan://")
+	if !strings.HasPrefix(raw, "vless://") {
+		return nil, fmt.Errorf("unsupported URL scheme — this scanner accepts only vless:// XHTTP configs")
 	}
+	return ParseVLESS(raw)
 }
 
 // ParseVLESS parses a vless:// share URL into a VLESSConfig.
@@ -120,7 +107,7 @@ func ParseVLESS(raw string) (*VLESSConfig, error) {
 		Port:        port,
 		Encryption:  paramOr(params, "encryption", "none"),
 		Flow:        params.Get("flow"),
-		Network:     paramOr(params, "type", "tcp"),
+		Network:     paramOr(params, "type", ""),
 		Security:    paramOr(params, "security", "none"),
 		SNI:         params.Get("sni"),
 		Fingerprint: paramOr(params, "fp", ""),
@@ -128,15 +115,7 @@ func ParseVLESS(raw string) (*VLESSConfig, error) {
 		Remark:      remark,
 	}
 
-	// Transport-specific
 	switch cfg.Network {
-	case "ws":
-		cfg.Path = paramOr(params, "path", "/")
-		cfg.Host = paramOr(params, "host", cfg.SNI)
-	case "grpc":
-		cfg.ServiceName = params.Get("serviceName")
-		cfg.Authority = params.Get("authority")
-		cfg.Mode = paramOr(params, "mode", "gun")
 	case "xhttp", "splithttp":
 		cfg.Path = paramOr(params, "path", "/")
 		cfg.Host = paramOr(params, "host", cfg.SNI)
@@ -145,6 +124,10 @@ func ParseVLESS(raw string) (*VLESSConfig, error) {
 		if err != nil {
 			return nil, err
 		}
+	case "":
+		return nil, fmt.Errorf("unsupported transport: missing type=xhttp")
+	default:
+		return nil, fmt.Errorf("unsupported transport %q — this scanner accepts only xhttp or splithttp", cfg.Network)
 	}
 
 	// ALPN
@@ -191,32 +174,16 @@ func (c *VLESSConfig) ToShareURL() string {
 		params.Set("alpn", strings.Join(c.ALPN, ","))
 	}
 
-	switch c.Network {
-	case "ws":
-		params.Set("path", c.Path)
-		if c.Host != "" {
-			params.Set("host", c.Host)
-		}
-	case "grpc":
-		params.Set("serviceName", c.ServiceName)
-		if c.Authority != "" {
-			params.Set("authority", c.Authority)
-		}
-		if c.Mode != "" {
-			params.Set("mode", c.Mode)
-		}
-	case "xhttp", "splithttp":
-		params.Set("path", c.Path)
-		if c.Host != "" {
-			params.Set("host", c.Host)
-		}
-		if c.Mode != "" {
-			params.Set("mode", c.Mode)
-		}
-		if len(c.XHTTPExtra) > 0 {
-			if extra, err := json.Marshal(c.XHTTPExtra); err == nil {
-				params.Set("extra", string(extra))
-			}
+	params.Set("path", c.Path)
+	if c.Host != "" {
+		params.Set("host", c.Host)
+	}
+	if c.Mode != "" {
+		params.Set("mode", c.Mode)
+	}
+	if len(c.XHTTPExtra) > 0 {
+		if extra, err := json.Marshal(c.XHTTPExtra); err == nil {
+			params.Set("extra", string(extra))
 		}
 	}
 
@@ -296,90 +263,4 @@ func parseXHTTPExtra(params url.Values) (map[string]interface{}, error) {
 		return nil, nil
 	}
 	return extra, nil
-}
-
-// ParseTrojan parses a trojan:// share URL.
-// Format: trojan://password@address:port?params#remark
-func ParseTrojan(raw string) (*VLESSConfig, error) {
-	if !strings.HasPrefix(raw, "trojan://") {
-		return nil, fmt.Errorf("not a trojan:// URL")
-	}
-
-	raw = strings.TrimPrefix(raw, "trojan://")
-
-	// Split remark
-	remark := ""
-	if idx := strings.LastIndex(raw, "#"); idx != -1 {
-		remark = raw[idx+1:]
-		raw = raw[:idx]
-	}
-	remark, _ = url.QueryUnescape(remark)
-
-	// Split params
-	params := url.Values{}
-	if idx := strings.Index(raw, "?"); idx != -1 {
-		var err error
-		params, err = url.ParseQuery(raw[idx+1:])
-		if err != nil {
-			return nil, fmt.Errorf("parsing query params: %w", err)
-		}
-		raw = raw[:idx]
-	}
-
-	// Split password@address:port
-	atIdx := strings.Index(raw, "@")
-	if atIdx == -1 {
-		return nil, fmt.Errorf("missing @ in URL")
-	}
-	password, _ := url.QueryUnescape(raw[:atIdx])
-	hostPort := raw[atIdx+1:]
-
-	host, portStr, err := splitHostPort(hostPort)
-	if err != nil {
-		return nil, fmt.Errorf("parsing host:port %q: %w", hostPort, err)
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		port, params, err = recoverMissingQuerySep(portStr, params)
-		if err != nil {
-			return nil, fmt.Errorf("invalid port %q", portStr)
-		}
-	}
-
-	cfg := &VLESSConfig{
-		Protocol:    "trojan",
-		Password:    password,
-		Address:     host,
-		Port:        port,
-		Network:     paramOr(params, "type", "tcp"),
-		Security:    paramOr(params, "security", "tls"),
-		SNI:         params.Get("sni"),
-		Fingerprint: paramOr(params, "fp", ""),
-		Insecure:    params.Get("insecure") == "1" || params.Get("allowInsecure") == "1",
-		Remark:      remark,
-	}
-
-	switch cfg.Network {
-	case "ws":
-		cfg.Path = paramOr(params, "path", "/")
-		cfg.Host = paramOr(params, "host", cfg.SNI)
-	case "grpc":
-		cfg.ServiceName = params.Get("serviceName")
-		cfg.Authority = params.Get("authority")
-		cfg.Mode = paramOr(params, "mode", "gun")
-	case "xhttp", "splithttp":
-		cfg.Path = paramOr(params, "path", "/")
-		cfg.Host = paramOr(params, "host", cfg.SNI)
-		cfg.Mode = paramOr(params, "mode", "auto")
-		cfg.XHTTPExtra, err = parseXHTTPExtra(params)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	if alpnStr := params.Get("alpn"); alpnStr != "" {
-		cfg.ALPN = strings.Split(alpnStr, ",")
-	}
-
-	return cfg, nil
 }

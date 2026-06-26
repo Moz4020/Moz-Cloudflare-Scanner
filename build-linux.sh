@@ -14,6 +14,7 @@ fi
 mkdir -p dist
 
 ldflags="-s -w"
+ldflags="$ldflags -X $module/pkg/version.Version=1.0"
 ldflags="$ldflags -X $module/pkg/version.Commit=$commit"
 ldflags="$ldflags -X $module/pkg/version.BuildDate=$build_date"
 ldflags="$ldflags -X $module/pkg/version.BuiltBy=build-linux.sh"

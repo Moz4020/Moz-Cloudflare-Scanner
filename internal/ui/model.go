@@ -178,11 +178,11 @@ type AppModel struct {
 	generatorOutputPath  string
 	generatorCount       int
 	// config setup options
-	configURL      string
+	configURL        string
 	configProfileIdx int // index into configProfileLabels (0 = Fast, 1 = Balanced, 2 = Deep, 3 = Custom)
-	configCountIdx int // index into configCountValues
-	configTopNIdx  int // index into configTopNValues
-	configSetupRow int // 0=source, 1=count, 2=workers, 3=timeout, 4=ports
+	configCountIdx   int // index into configCountValues
+	configTopNIdx    int // index into configTopNValues
+	configSetupRow   int // 0=source, 1=count, 2=workers, 3=timeout, 4=ports
 	// quick-scan-style pickers for Phase 1
 	configWorkersIdx          int
 	configTimeoutIdx          int
@@ -216,7 +216,7 @@ type AppModel struct {
 	stabilityWorkersIdx     int
 	stabilityWorkersCustom  string
 	stabilityPortIdx        int
-	stabilityPortCustom      string
+	stabilityPortCustom     string
 	stabilityProfileIdx     int // index into stabilityProfileLabels (0 = Fast Test, 1 = Balanced, 2 = Accurate, 3 = Custom)
 	stabilitySetupRow       int // 0=tries, 1=interval, 2=workers, 3=port, 4=start
 	stabilityResults        []*result.Result
@@ -277,7 +277,7 @@ func NewApp(version string) AppModel {
 		configWorkersIdx:       1,
 		configTimeoutIdx:       1,
 		configPhase2WorkersIdx: 1, // default: Balanced 50
-		stabilityProfileIdx:     1, // default: Balanced
+		stabilityProfileIdx:    1, // default: Balanced
 		stabilityTriesIdx:      1, // default: 10 packets
 		stabilityIntervalIdx:   1, // default: 200ms
 		stabilityWorkersIdx:    1, // default: 25 workers
@@ -286,7 +286,7 @@ func NewApp(version string) AppModel {
 
 	// Config input for "Scan with Config"
 	cfgInput := textinput.New()
-	cfgInput.Placeholder = "vless:// or trojan:// share URL"
+	cfgInput.Placeholder = "vless:// XHTTP share URL"
 	cfgInput.CharLimit = 2000
 	cfgInput.Width = 58
 	cfgInput.Prompt = "› "
@@ -296,7 +296,7 @@ func NewApp(version string) AppModel {
 	m.configInput = cfgInput
 
 	genInput := textinput.New()
-	genInput.Placeholder = "paste your working vless:// config"
+	genInput.Placeholder = "paste your working vless:// XHTTP config"
 	genInput.CharLimit = 2000
 	genInput.Width = 58
 	genInput.Prompt = "› "
@@ -551,11 +551,11 @@ func (m AppModel) selectMenuItem() (tea.Model, tea.Cmd) {
 		return m, textinput.Blink
 	case menuStabilityTest:
 		m.page = PageStabilityTestSetup
-		m.stabilityProfileIdx = 1 // default: Balanced
-		m.stabilityTriesIdx = 1 // default: 10 packets
+		m.stabilityProfileIdx = 1  // default: Balanced
+		m.stabilityTriesIdx = 1    // default: 10 packets
 		m.stabilityIntervalIdx = 1 // default: 200ms
-		m.stabilityWorkersIdx = 1 // default: 25 workers
-		m.stabilityPortIdx = 0 // default: 443
+		m.stabilityWorkersIdx = 1  // default: 25 workers
+		m.stabilityPortIdx = 0     // default: 443
 		m.stabilitySetupRow = 0
 		m.stabilityResults = nil
 		m.stabilityScanning = false
@@ -602,10 +602,8 @@ func workingEndpoints(results []*xraytest.ValidationResult) []string {
 
 	sort.SliceStable(working, func(i, j int) bool {
 		a, b := working[i], working[j]
-		aLatency := validationLatencyRank(a.Latency)
-		bLatency := validationLatencyRank(b.Latency)
-		if aLatency != bLatency {
-			return aLatency < bLatency
+		if cmp := compareValidationResults(a, b); cmp != 0 {
+			return cmp < 0
 		}
 		aEndpoint := formatEndpoint(a.IP, a.Port)
 		bEndpoint := formatEndpoint(b.IP, b.Port)
@@ -713,10 +711,11 @@ func endpointCandidateRow(r *result.Result, status string) string {
 }
 
 func validationHeader() string {
-	return fmt.Sprintf("  %-*s  %-*s  %9s  %-*s",
+	return fmt.Sprintf("  %-*s  %-*s  %9s  %8s  %-*s",
 		endpointColWidth, "ENDPOINT",
 		transportColWidth, "TYPE",
 		"LATENCY",
+		"CHECKS",
 		statusColWidth, "STATUS",
 	)
 }
@@ -726,15 +725,7 @@ func validationRow(r *xraytest.ValidationResult, status string) string {
 	endpointFormatted := styleColEndpoint.Render(fmt.Sprintf("%-*s", endpointColWidth, endpointStr))
 
 	typeStr := fmt.Sprintf("%-*s", transportColWidth, r.Transport)
-	var typeFormatted string
-	switch strings.ToLower(r.Transport) {
-	case "ws":
-		typeFormatted = lipgloss.NewStyle().Foreground(lipgloss.Color("#00B4D8")).Bold(true).Render(typeStr)
-	case "grpc":
-		typeFormatted = lipgloss.NewStyle().Foreground(lipgloss.Color("#9D4EDD")).Bold(true).Render(typeStr)
-	default:
-		typeFormatted = lipgloss.NewStyle().Foreground(lipgloss.Color("#F6821F")).Bold(true).Render(typeStr)
-	}
+	typeFormatted := lipgloss.NewStyle().Foreground(lipgloss.Color("#F6821F")).Bold(true).Render(typeStr)
 
 	latencyStr := "-"
 	if r.Success {
@@ -752,21 +743,35 @@ func validationRow(r *xraytest.ValidationResult, status string) string {
 		latencyFormatted = styleColLatencySlow.Render(latencyPadded)
 	}
 
+	checks := "-"
+	if r.Attempts > 0 {
+		checks = fmt.Sprintf("%d/%d", r.Successes, r.Attempts)
+	}
+	checksFormatted := styleNormal.Render(fmt.Sprintf("%8s", checks))
+
 	var rawStatus string
 	var statusStyle lipgloss.Style
 	if r.Success {
-		rawStatus = "✓ working"
+		if r.Throughput > 0 {
+			rawStatus = fmt.Sprintf("ok %.0f KB/s", r.Throughput/1024)
+		} else {
+			rawStatus = "ok"
+		}
 		statusStyle = styleColLatencyFast
 	} else {
-		rawStatus = "✗ failed"
+		rawStatus = status
+		if rawStatus == "" {
+			rawStatus = "failed"
+		}
 		statusStyle = styleColLossBad
 	}
 	statusFormatted := statusStyle.Render(fmt.Sprintf("%-*s", statusColWidth, rawStatus))
 
-	return fmt.Sprintf("  %s  %s  %s  %s",
+	return fmt.Sprintf("  %s  %s  %s  %s  %s",
 		endpointFormatted,
 		typeFormatted,
 		latencyFormatted,
+		checksFormatted,
 		statusFormatted,
 	)
 }
@@ -799,8 +804,6 @@ func truncateMiddle(s string, max int) string {
 	right := max - 3 - left
 	return s[:left] + "..." + s[len(s)-right:]
 }
-
-
 
 func formatValidationLatency(latency time.Duration) string {
 	if latency <= 0 {
@@ -1025,7 +1028,7 @@ func (m AppModel) viewGenerateConfigs() string {
 	if summary := parsedConfigSummary(m.generatorInput.Value()); summary != "" {
 		sb.WriteString(styleDim.Render("           "+summary) + "\n\n")
 	} else {
-		sb.WriteString(styleDim.Render("           paste one working VLESS config; endpoints come from ips.txt") + "\n\n")
+		sb.WriteString(styleDim.Render("           paste one working VLESS XHTTP config; endpoints come from ips.txt") + "\n\n")
 	}
 
 	rowLabel(1, "  Prefix ")
@@ -1139,7 +1142,7 @@ func (m AppModel) handleGenerateConfigsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 
 func generateV2RayConfigs(rawURL, prefix string) (string, int, error) {
 	if strings.TrimSpace(rawURL) == "" {
-		return "", 0, fmt.Errorf("paste a working VLESS config first")
+		return "", 0, fmt.Errorf("paste a working VLESS XHTTP config first")
 	}
 	cfg, err := xraytest.ParseProxyURL(rawURL)
 	if err != nil {
@@ -1319,7 +1322,7 @@ func (m AppModel) viewScanWithConfig() string {
 	if m.configScanning || m.configDone {
 		title = "Phase 2 — Xray Validation"
 	}
-	sb.WriteString("\n" + styleTitle.Render("  " + title) + "\n")
+	sb.WriteString("\n" + styleTitle.Render("  "+title) + "\n")
 	sb.WriteString(fmt.Sprintf("%s\n\n", styleSep.Render("  "+strings.Repeat("─", minInt(m.width-4, 70)))))
 
 	if !m.configScanning && !m.configDone {
@@ -1401,7 +1404,7 @@ func (m AppModel) viewScanWithConfig() string {
 		default:
 			profileDesc = "Custom: adjust count, workers, and timeout manually"
 		}
-		sb.WriteString(styleDim.Render("  │          " + profileDesc) + "\n\n")
+		sb.WriteString(styleDim.Render("  │          "+profileDesc) + "\n\n")
 
 		// Row 1: Source
 		rowLabel(1, "Source")
@@ -1614,26 +1617,54 @@ func visibleValidationRows(results []*xraytest.ValidationResult, maxRows int, fi
 
 	rows := append([]*xraytest.ValidationResult(nil), results...)
 	sort.SliceStable(rows, func(i, j int) bool {
-		a, b := rows[i], rows[j]
-		if a == nil || b == nil {
-			return b == nil
-		}
-		if a.Success != b.Success {
-			return a.Success
-		}
-		if a.Success {
-			aLatency := validationLatencyRank(a.Latency)
-			bLatency := validationLatencyRank(b.Latency)
-			if aLatency != bLatency {
-				return aLatency < bLatency
-			}
-		}
-		return formatEndpoint(a.IP, a.Port) < formatEndpoint(b.IP, b.Port)
+		return compareValidationResults(rows[i], rows[j]) < 0
 	})
 	if len(rows) > maxRows {
 		return rows[:maxRows]
 	}
 	return rows
+}
+
+func compareValidationResults(a, b *xraytest.ValidationResult) int {
+	if a == nil || b == nil {
+		if a == b {
+			return 0
+		}
+		if a == nil {
+			return 1
+		}
+		return -1
+	}
+	if a.Success != b.Success {
+		if a.Success {
+			return -1
+		}
+		return 1
+	}
+	if a.Successes != b.Successes {
+		return b.Successes - a.Successes
+	}
+	if a.Throughput != b.Throughput {
+		if a.Throughput > b.Throughput {
+			return -1
+		}
+		return 1
+	}
+	aLatency := validationLatencyRank(a.Latency)
+	bLatency := validationLatencyRank(b.Latency)
+	if aLatency != bLatency {
+		if aLatency < bLatency {
+			return -1
+		}
+		return 1
+	}
+	if aEndpoint, bEndpoint := formatEndpoint(a.IP, a.Port), formatEndpoint(b.IP, b.Port); aEndpoint != bEndpoint {
+		if aEndpoint < bEndpoint {
+			return -1
+		}
+		return 1
+	}
+	return 0
 }
 
 func (m AppModel) configSuccessCount() int {
@@ -2243,17 +2274,17 @@ var configProfileLabels = []string{"Fast", "Balanced", "Deep", "Custom"}
 func (m *AppModel) applyConfigProfile() {
 	switch m.configProfileIdx {
 	case 0: // Fast
-		m.configCountIdx = 1       // Normal 5k
-		m.configWorkersIdx = 2     // Fast 200
-		m.configTimeoutIdx = 0     // Fast 2s
+		m.configCountIdx = 1   // Normal 5k
+		m.configWorkersIdx = 2 // Fast 200
+		m.configTimeoutIdx = 0 // Fast 2s
 	case 1: // Balanced
-		m.configCountIdx = 2       // Balanced 20k
-		m.configWorkersIdx = 1     // Balanced 100
-		m.configTimeoutIdx = 1     // Balanced 3s
+		m.configCountIdx = 2   // Balanced 20k
+		m.configWorkersIdx = 1 // Balanced 100
+		m.configTimeoutIdx = 1 // Balanced 3s
 	case 2: // Deep
-		m.configCountIdx = 3       // Deep 50k
-		m.configWorkersIdx = 3     // Max 300
-		m.configTimeoutIdx = 2     // Safe 5s
+		m.configCountIdx = 3   // Deep 50k
+		m.configWorkersIdx = 3 // Max 300
+		m.configTimeoutIdx = 2 // Safe 5s
 	}
 }
 
@@ -3141,7 +3172,7 @@ func (m AppModel) viewStabilityTestSetup() string {
 	default:
 		profileDesc = "Custom: adjust parameters manually"
 	}
-	sb.WriteString(styleDim.Render("  │           " + profileDesc) + "\n\n")
+	sb.WriteString(styleDim.Render("  │           "+profileDesc) + "\n\n")
 
 	// Row 1: Packets
 	rowLabel(1, "Packets")
@@ -3668,5 +3699,3 @@ func (m *AppModel) updatePhase1Top20(r *result.Result) {
 		m.configPhase1Top20 = m.configPhase1Top20[:20]
 	}
 }
-
-
