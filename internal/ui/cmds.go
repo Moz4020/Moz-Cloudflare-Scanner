@@ -327,6 +327,9 @@ func configProbeFromURL(rawURL string, timeout time.Duration) (prober.Config, er
 	if sni == "" {
 		sni = cfg.Host
 	}
+	if sni == "" && net.ParseIP(cfg.Address) == nil {
+		sni = cfg.Address
+	}
 
 	probeCfg := prober.Config{
 		Port:               cfg.Port,

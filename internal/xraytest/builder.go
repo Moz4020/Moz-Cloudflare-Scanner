@@ -15,6 +15,10 @@ func BuildXrayConfig(cfg *VLESSConfig, socksPort int) ([]byte, error) {
 			"error":    "",
 		},
 		"dns": map[string]interface{}{
+			"hosts": map[string]interface{}{
+				"cp.cloudflare.com":    "104.16.248.249",
+				"speed.cloudflare.com": "104.16.248.249",
+			},
 			"servers": []string{"1.1.1.1", "8.8.8.8"},
 		},
 		"inbounds": []map[string]interface{}{

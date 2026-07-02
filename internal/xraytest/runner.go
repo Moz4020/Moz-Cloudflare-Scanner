@@ -24,8 +24,8 @@ var portCounter atomic.Int32
 const (
 	traceProbeURL        = "https://cp.cloudflare.com/cdn-cgi/trace"
 	payloadProbeURL      = "https://speed.cloudflare.com/__down?bytes=262144"
-	validationAttempts   = 3
-	validationMinSuccess = 2
+	validationAttempts   = 1
+	validationMinSuccess = 1
 	payloadBytes         = 256 * 1024
 	connectivityTimeout  = 5 * time.Second
 	transportTimeout     = 3 * time.Second

@@ -1026,7 +1026,11 @@ func (m AppModel) viewGenerateConfigs() string {
 	rowLabel(0, "  Config ")
 	sb.WriteString(m.generatorInput.View() + "\n")
 	if summary := parsedConfigSummary(m.generatorInput.Value()); summary != "" {
-		sb.WriteString(styleDim.Render("           "+summary) + "\n\n")
+		if strings.HasPrefix(summary, "invalid URL:") {
+			sb.WriteString(styleWarn.Render("           "+summary) + "\n\n")
+		} else {
+			sb.WriteString(styleDim.Render("           "+summary) + "\n\n")
+		}
 	} else {
 		sb.WriteString(styleDim.Render("           paste one working VLESS XHTTP config; endpoints come from ips.txt") + "\n\n")
 	}
@@ -1487,11 +1491,6 @@ func (m AppModel) viewScanWithConfig() string {
 	success, failed, skipped := validationOutcomeCounts(m.configResults)
 	successRate := validationSuccessRate(success, failed)
 
-	icon := m.spinner.View()
-	if m.configDone {
-		icon = styleGood.Render("✓")
-	}
-
 	elapsedStr := "-"
 	etaStr := "-"
 	scanRateStr := "-"
@@ -1523,19 +1522,14 @@ func (m AppModel) viewScanWithConfig() string {
 		elapsedStr,
 		etaStr,
 		scanRateStr,
-	) + "\n\n")
+	) + "\n")
 
 	// Progress Bar
 	if total > 0 {
 		sb.WriteString(renderProgressBar(gridWidth, done, total) + "\n\n")
 	}
 
-	if !m.configDone {
-		sb.WriteString(fmt.Sprintf("  %s  xray validating candidates  %s\n\n",
-			icon,
-			scanWave(m.bannerFrame+5, 32),
-		))
-	} else if success > 0 {
+	if m.configDone && success > 0 {
 		sb.WriteString(styleGood.Render("  Ready: copy working endpoints or import generated configs from the V2Ray generator.") + "\n\n")
 	}
 
@@ -1545,7 +1539,7 @@ func (m AppModel) viewScanWithConfig() string {
 	))
 
 	// Results
-	maxRows := m.height - 12
+	maxRows := m.height - 19
 	if maxRows < 3 {
 		maxRows = 3
 	}
@@ -1644,16 +1638,16 @@ func compareValidationResults(a, b *xraytest.ValidationResult) int {
 	if a.Successes != b.Successes {
 		return b.Successes - a.Successes
 	}
-	if a.Throughput != b.Throughput {
-		if a.Throughput > b.Throughput {
-			return -1
-		}
-		return 1
-	}
 	aLatency := validationLatencyRank(a.Latency)
 	bLatency := validationLatencyRank(b.Latency)
 	if aLatency != bLatency {
 		if aLatency < bLatency {
+			return -1
+		}
+		return 1
+	}
+	if a.Throughput != b.Throughput {
+		if a.Throughput > b.Throughput {
 			return -1
 		}
 		return 1
@@ -1979,7 +1973,11 @@ func (m AppModel) viewConfigOptional() string {
 	rowLabel(0, "Config")
 	sb.WriteString(m.configInput.View() + "\n")
 	if summary := parsedConfigSummary(m.configInput.Value()); summary != "" {
-		sb.WriteString(styleDim.Render("  │          "+summary) + "\n\n")
+		if strings.HasPrefix(summary, "invalid URL:") {
+			sb.WriteString(styleWarn.Render("  │          "+summary) + "\n\n")
+		} else {
+			sb.WriteString(styleDim.Render("  │          "+summary) + "\n\n")
+		}
 	} else {
 		sb.WriteString(styleDim.Render("  │          optional; leave empty to find healthy endpoints without xray validation") + "\n\n")
 	}
@@ -2037,9 +2035,18 @@ func (m AppModel) viewConfigOptional() string {
 
 func (m AppModel) handleConfigOptionalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.configOptionalRow == 0 && msg.Type == tea.KeyRunes && msg.Paste {
-		m.configInput.SetValue(cleanPastedConfigURL(string(msg.Runes)))
+		pasted := cleanPastedConfigURL(string(msg.Runes))
+		m.configInput.SetValue(pasted)
 		m.configInput.CursorEnd()
-		m.statusMsg = "config pasted — press Enter to continue"
+		if pasted != "" {
+			if _, err := xraytest.ParseProxyURL(pasted); err != nil {
+				m.statusMsg = fmt.Sprintf("invalid URL: %v", err)
+			} else {
+				m.statusMsg = "config pasted — press Enter to continue"
+			}
+		} else {
+			m.statusMsg = ""
+		}
 		return m, nil
 	}
 
@@ -2071,17 +2078,35 @@ func (m AppModel) handleConfigOptionalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.page = PageScanWithConfig
 			m.configInput.Blur()
 			return m, nil
-		case "down":
-			m.configOptionalRow = 1
-			m.configInput.Blur()
-			return m, nil
-		case "enter":
+		case "down", "enter":
+			val := strings.TrimSpace(m.configInput.Value())
+			if val != "" {
+				if _, err := xraytest.ParseProxyURL(val); err != nil {
+					m.statusMsg = fmt.Sprintf("invalid URL: %v", err)
+					return m, nil
+				}
+			}
+			if strings.HasPrefix(m.statusMsg, "invalid URL:") {
+				m.statusMsg = ""
+			}
 			m.configOptionalRow = 1
 			m.configInput.Blur()
 			return m, nil
 		}
 		var cmd tea.Cmd
 		m.configInput, cmd = m.configInput.Update(msg)
+		val := strings.TrimSpace(m.configInput.Value())
+		if val == "" {
+			if strings.HasPrefix(m.statusMsg, "invalid URL:") {
+				m.statusMsg = ""
+			}
+		} else {
+			if _, err := xraytest.ParseProxyURL(val); err == nil {
+				if strings.HasPrefix(m.statusMsg, "invalid URL:") {
+					m.statusMsg = ""
+				}
+			}
+		}
 		return m, cmd
 	}
 
@@ -2413,11 +2438,6 @@ func (m AppModel) viewConfigPhase1() string {
 	sb.WriteString("\n" + styleTitle.Render("  Phase 1 — Candidate Scan") + "\n")
 	sb.WriteString(fmt.Sprintf("%s\n\n", styleSep.Render("  "+strings.Repeat("─", minInt(m.width-4, 70)))))
 
-	icon := m.spinner.View()
-	if m.configPhase1Done {
-		icon = styleGood.Render("✓")
-	}
-
 	healthy := 0
 	for _, r := range m.configPhase1Results {
 		if r.IsHealthy() {
@@ -2478,17 +2498,7 @@ func (m AppModel) viewConfigPhase1() string {
 		sb.WriteString(renderProgressBar(gridWidth, tested, m.configPhase1Total) + "\n\n")
 	}
 
-	if !m.configPhase1Done {
-		statusText := "discovering reachable candidates"
-		if m.configPhase1Neighboring {
-			statusText = "probing neighboring IPs of healthy hits"
-		}
-		sb.WriteString(fmt.Sprintf("  %s  %s  %s\n\n",
-			icon,
-			statusText,
-			scanWave(m.bannerFrame, 28),
-		))
-	}
+
 
 	if m.configPhase1Done {
 		if m.configPhase1Only {
@@ -2527,7 +2537,14 @@ func (m AppModel) viewConfigPhase1() string {
 			styleSep.Render(tableSeparator(76)),
 		))
 
+		topCount := m.height - 18
+		if topCount < 3 {
+			topCount = 3
+		}
 		top := m.configPhase1Top20
+		if len(top) > topCount {
+			top = top[:topCount]
+		}
 		for _, r := range top {
 			status := "healthy"
 			if withConfig {
@@ -3388,24 +3405,14 @@ func (m AppModel) viewStabilityTestProgress() string {
 		total,
 		elapsedStr,
 		etaStr,
-	) + "\n\n")
+	) + "\n")
 
 	if total > 0 {
-		sb.WriteString(renderProgressBar(gridWidth, done, total) + "\n\n")
+		sb.WriteString(renderProgressBar(gridWidth, done, total) + "\n")
 	}
 
-	icon := m.spinner.View()
 	if m.stabilityDone {
-		icon = styleGood.Render("✓")
-	}
-
-	if !m.stabilityDone {
-		sb.WriteString(fmt.Sprintf("  %s  testing IP stability...  %s\n\n",
-			icon,
-			scanWave(m.bannerFrame, 28),
-		))
-	} else {
-		sb.WriteString(styleGood.Render("  ✓ Test completed!") + " " + styleNormal.Render("Press ") + styleAccent.Render("c") + styleNormal.Render(" to copy best IP, or ") + styleAccent.Render("s") + styleNormal.Render(" to save stable_ips.txt") + "\n\n")
+		sb.WriteString(styleGood.Render("  ✓ Test completed!") + " " + styleNormal.Render("Press ") + styleAccent.Render("c") + styleNormal.Render(" to copy best IP, or ") + styleAccent.Render("s") + styleNormal.Render(" to save stable_ips.txt") + "\n")
 	}
 
 	if len(m.stabilityResults) > 0 {
@@ -3414,7 +3421,10 @@ func (m AppModel) viewStabilityTestProgress() string {
 			styleSep.Render(tableSeparator(74)),
 		))
 
-		topCount := 20
+		topCount := m.height - 16
+		if topCount < 3 {
+			topCount = 3
+		}
 		if topCount > len(m.stabilityResults) {
 			topCount = len(m.stabilityResults)
 		}

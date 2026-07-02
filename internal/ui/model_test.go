@@ -461,6 +461,45 @@ func TestConfigInputRowDoesNotTreatKAsNavigation(t *testing.T) {
 	}
 }
 
+func TestConfigInputRowValidationAndNavigationBlock(t *testing.T) {
+	m := NewApp("test")
+	m.page = PageConfigOptional
+	m.configOptionalRow = 0
+
+	// 1. Paste invalid URL
+	next, _ := m.handleConfigOptionalKey(tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune("trojan://uuid@example.com:443?type=ws"),
+		Paste: true,
+	})
+	got := next.(AppModel)
+	if !strings.Contains(got.statusMsg, "invalid URL") {
+		t.Fatalf("statusMsg should show invalid URL on paste, got: %q", got.statusMsg)
+	}
+
+	// 2. Try to move down/enter with invalid config — should block navigation
+	got.configInput.SetValue("invalid-config-url")
+	next2, _ := got.handleConfigOptionalKey(tea.KeyMsg{Type: tea.KeyEnter})
+	got2 := next2.(AppModel)
+	if got2.configOptionalRow != 0 {
+		t.Fatalf("expected optional row to remain 0 (blocked navigation), got %d", got2.configOptionalRow)
+	}
+	if !strings.Contains(got2.statusMsg, "invalid URL") {
+		t.Fatalf("expected status message warning on block, got: %q", got2.statusMsg)
+	}
+
+	// 3. Clear/Correct input and try again — should allow navigation
+	got2.configInput.SetValue("")
+	next3, _ := got2.handleConfigOptionalKey(tea.KeyMsg{Type: tea.KeyEnter})
+	got3 := next3.(AppModel)
+	if got3.configOptionalRow != 1 {
+		t.Fatalf("expected row to advance to 1 with empty config, got %d", got3.configOptionalRow)
+	}
+	if got3.statusMsg != "" {
+		t.Fatalf("expected statusMsg to be cleared, got %q", got3.statusMsg)
+	}
+}
+
 func TestParsedConfigSummaryShowsXHTTPAndEncryption(t *testing.T) {
 	raw := "vless://11111111-1111-1111-1111-111111111111@104.17.122.146:443?encryption=mlkem768x25519plus.native.0rtt.bE9x9OGq01jLGzKdCeP88_YCTxIJ8rIa4pxl7cQleEI&security=tls&sni=insane.mozsub.ir&type=xhttp&host=insane.mozsub.ir&path=%2Fmozzywozzy&mode=auto#Main-Moz"
 	got := parsedConfigSummary(raw)
