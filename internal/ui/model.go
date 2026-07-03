@@ -3273,6 +3273,23 @@ func (m AppModel) handleIPInfoKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.statusMsg = "copied resolved IP details to clipboard"
 			}
 			return m, nil
+		case "s":
+			filename := fmt.Sprintf("moz-cloudflare-scanner-iplookup-%s.txt", time.Now().Format("20060102-150405"))
+			var fileSb strings.Builder
+			for _, r := range m.ipInfoResults {
+				colo := r.Colo
+				if colo == "" {
+					colo = "N/A"
+				}
+				fileSb.WriteString(fmt.Sprintf("%s,%s,%dms\n", r.IP, colo, r.Avg().Milliseconds()))
+			}
+			err := os.WriteFile(filename, []byte(fileSb.String()), 0644)
+			if err != nil {
+				m.statusMsg = fmt.Sprintf("failed to save to file: %s", err)
+			} else {
+				m.statusMsg = fmt.Sprintf("saved lookup results to %s", filename)
+			}
+			return m, nil
 		}
 		return m, nil
 	}
@@ -3401,7 +3418,7 @@ func (m AppModel) viewIPInfo() string {
 	}
 
 	if m.ipInfoDone {
-		sb.WriteString(styleGood.Render("  ✓ Lookup completed!") + " " + styleNormal.Render("Press ") + styleAccent.Render("c") + styleNormal.Render(" to copy IP details to clipboard") + "\n\n")
+		sb.WriteString(styleGood.Render("  ✓ Lookup completed!") + " " + styleNormal.Render("Press ") + styleAccent.Render("c") + styleNormal.Render(" to copy IP details, or ") + styleAccent.Render("s") + styleNormal.Render(" to save to file") + "\n\n")
 	}
 
 	sb.WriteString(fmt.Sprintf("  %-25s  %8s  %9s  %-10s\n%s\n",
@@ -3437,18 +3454,18 @@ func (m AppModel) viewIPInfo() string {
 		if r.Avg() > 0 {
 			latStr = fmt.Sprintf("%dms", r.Avg().Milliseconds())
 		}
-		sb.WriteString(fmt.Sprintf("  %-25s  %8s  %9s  %-10s\n",
-			styleColEndpoint.Render(r.IP.String()),
-			styleAccent.Render(colo),
-			styleGood.Render(latStr),
-			styleDim.Render(status),
+		sb.WriteString(fmt.Sprintf("  %s  %s  %s  %s\n",
+			styleColEndpoint.Render(fmt.Sprintf("%-25s", r.IP.String())),
+			styleAccent.Render(fmt.Sprintf("%8s", colo)),
+			styleGood.Render(fmt.Sprintf("%9s", latStr)),
+			styleDim.Render(fmt.Sprintf("%-10s", status)),
 		))
 	}
 	sb.WriteRune('\n')
 
 	hint := "  esc back"
 	if m.ipInfoDone {
-		hint = "  c copy details   esc back"
+		hint = "  c copy details   s save to file   esc back"
 	}
 	sb.WriteString(styleHint.Render(hint) + "\n")
 	if m.statusMsg != "" {
