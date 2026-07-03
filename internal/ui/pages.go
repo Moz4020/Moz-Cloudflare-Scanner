@@ -11,6 +11,5 @@ const (
 	PageConfigOptional // optional config URL + Phase 2 top N
 	PageConfigPhase1   // xray config - fast connectivity scan
 	PageConfigPhase2   // xray config - xray validation
-	PageConfigPhase3   // integrated stability verification
 	PageIPInfo
 )

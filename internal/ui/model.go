@@ -127,23 +127,6 @@ func (m AppModel) isPhase2WorkersCustomSelected() bool {
 	return m.configPhase2WorkersIdx == len(phase2WorkersPresets)-1
 }
 
-var stabilityTriesLabels = []string{"5 packets", "10 packets", "25 packets", "50 packets", "Custom"}
-var stabilityTriesValues = []int{5, 10, 25, 50, 0}
-
-var stabilityIntervalLabels = []string{"100ms", "200ms", "500ms", "1s", "Custom"}
-var stabilityIntervalValues = []time.Duration{
-	100 * time.Millisecond,
-	200 * time.Millisecond,
-	500 * time.Millisecond,
-	time.Second,
-	0,
-}
-
-var stabilityWorkersLabels = []string{"10 workers", "25 workers", "50 workers", "100 workers", "Custom"}
-var stabilityWorkersValues = []int{10, 25, 50, 100, 0}
-
-var stabilityPortLabels = []string{"443", "80", "Custom"}
-var stabilityPortValues = []int{443, 80, 0}
 
 // ---------------------------------------------------------------------------
 // AppModel — root Bubble Tea model
@@ -207,25 +190,6 @@ type AppModel struct {
 	configPhase1Total       int  // intended IP count for Phase 1 progress display
 	configPhase1Neighboring bool // true when scanning neighboring IPs
 	liveResultPath          string
-	configStabilityTestIdx  int
-
-	// stability tester properties
-	stabilityTriesIdx       int
-	stabilityTriesCustom    string
-	stabilityIntervalIdx    int
-	stabilityIntervalCustom string
-	stabilityWorkersIdx     int
-	stabilityWorkersCustom  string
-	stabilityPortIdx        int
-	stabilityPortCustom     string
-	stabilityProfileIdx     int // index into stabilityProfileLabels (0 = Fast Test, 1 = Balanced, 2 = Accurate, 3 = Custom)
-	stabilitySetupRow       int // 0=tries, 1=interval, 2=workers, 3=port, 4=start
-	stabilityResults        []*result.Result
-	stabilityTotal          int
-	stabilityScanning       bool
-	stabilityDone           bool
-	stabilityCustomMode     bool
-	stabilityCustomRow      int // 1=tries, 2=interval, 3=workers, 4=port
 
 	// IP lookup state
 	ipInfoInput     textinput.Model
@@ -247,8 +211,8 @@ type menuEntry struct {
 }
 
 var menuEntries = []menuEntry{
-	{"Find Working IPs", "scan default Cloudflare or ips.txt ranges"},
-	{"Generate V2Ray Configs", "turn ips.txt + one VLESS URL into configs.txt"},
+	{"Find Cloudflare IPs", "scan default Cloudflare or ips.txt ranges"},
+	{"VLESS Config Generator", "turn ips.txt + one VLESS URL into configs.txt"},
 	{"IP Info / Lookup", "resolve COLO and details of individual IPs or ips.txt"},
 	{"About", ""},
 	{"Quit", ""},
@@ -287,12 +251,6 @@ func NewApp(version string) AppModel {
 		configWorkersIdx:       1,
 		configTimeoutIdx:       1,
 		configPhase2WorkersIdx: 1, // default: Balanced 50
-		configStabilityTestIdx: 1, // default: Yes
-		stabilityProfileIdx:    1, // default: Balanced
-		stabilityTriesIdx:      1, // default: 10 packets
-		stabilityIntervalIdx:   1, // default: 200ms
-		stabilityWorkersIdx:    1, // default: 25 workers
-		stabilityPortIdx:       0, // default: 443
 	}
 
 	// Config input for "Scan with Config"
@@ -385,90 +343,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case ConfigDoneMsg:
-		if m.configStabilityTestIdx == 1 && len(workingEndpoints(m.configResults)) > 0 {
-			working := workingEndpoints(m.configResults)
-			m.page = PageConfigPhase3
-			m.stabilityResults = nil
-			m.stabilityTotal = len(working)
-			m.stabilityScanning = true
-			m.stabilityDone = false
-			m.scanStarted = time.Now()
-
-			var endpoints []configEndpoint
-			for _, str := range working {
-				if ep, ok := parseEndpointLine(str, 443); ok {
-					endpoints = append(endpoints, ep)
-				}
-			}
-			return m, runIntegratedStabilityTest(endpoints, 10, 200*time.Millisecond, 25, 3*time.Second)
-		}
-
 		m.configScanning = false
 		m.configDone = true
 		m.scanDuration = time.Since(m.scanStarted)
-		return m, nil
-
-	case StabilityStartMsg:
-		m.stabilityTotal = msg.Total
-		m.stabilityResults = nil
-		m.stabilityScanning = true
-		m.stabilityDone = false
-		m.scanStarted = time.Now()
-		return m, nil
-
-	case StabilityResultMsg:
-		m.stabilityResults = append(m.stabilityResults, msg.Result)
-		SortStabilityResults(m.stabilityResults)
-		return m, nil
-
-	case StabilityDoneMsg:
-		m.stabilityScanning = false
-		m.stabilityDone = true
-		m.scanDuration = time.Since(m.scanStarted)
-
-		if m.page == PageConfigPhase3 {
-			m.page = PageConfigPhase2
-			m.configScanning = false
-			m.configDone = true
-
-			sort.SliceStable(m.configResults, func(i, j int) bool {
-				r1 := m.configResults[i]
-				r2 := m.configResults[j]
-				if !r1.Success || !r2.Success {
-					if r1.Success {
-						return true
-					}
-					return false
-				}
-
-				s1 := getStabilityResult(r1.IP, m.stabilityResults)
-				s2 := getStabilityResult(r2.IP, m.stabilityResults)
-				if s1 != nil && s2 != nil {
-					loss1 := s1.Loss()
-					loss2 := s2.Loss()
-					if loss1 != loss2 {
-						return loss1 < loss2
-					}
-					if r1.Latency != r2.Latency {
-						return r1.Latency < r2.Latency
-					}
-					jitter1 := s1.Jitter()
-					jitter2 := s2.Jitter()
-					if jitter1 != jitter2 {
-						return jitter1 < jitter2
-					}
-				}
-
-				return r1.Latency < r2.Latency
-			})
-		}
-		return m, nil
-
-	case StabilityErrMsg:
-		m.stabilityScanning = false
-		m.stabilityDone = false
-		m.page = PageScanWithConfig
-		m.statusMsg = msg.Err
 		return m, nil
 
 	case ConfigPhase1ResultMsg:
@@ -583,8 +460,6 @@ func (m AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleConfigPhase1Key(msg)
 	case PageConfigPhase2:
 		return m.handleScanWithConfigKey(msg)
-	case PageConfigPhase3:
-		return m.handleStabilityTestProgressKey(msg)
 	case PageIPInfo:
 		return m.handleIPInfoKey(msg)
 	}
@@ -626,7 +501,6 @@ func (m AppModel) selectMenuItem() (tea.Model, tea.Cmd) {
 		m.configWorkersIdx = 1       // default: Balanced 100
 		m.configTimeoutIdx = 1       // default: Balanced 3s
 		m.configPhase2WorkersIdx = 1 // default: Balanced 50
-		m.configStabilityTestIdx = 1 // default: Yes
 		m.configPhase2WorkersCustom = ""
 		m.configIPMode = configIPSourceDefault // default: random Cloudflare IPs
 		m.configPortFocus = 0
@@ -1022,8 +896,6 @@ func (m AppModel) View() string {
 		return m.viewConfigPhase1()
 	case PageConfigPhase2:
 		return m.viewScanWithConfig()
-	case PageConfigPhase3:
-		return m.viewStabilityTestProgress()
 	case PageIPInfo:
 		return m.viewIPInfo()
 	}
@@ -2099,21 +1971,12 @@ func (m AppModel) viewConfigOptional() string {
 		sb.WriteString(styleDim.Render(fmt.Sprintf("  │          Phase 2 xray workers; capped at %d for stability", maxPhase2Workers)) + "\n\n")
 	}
 
-	rowLabel(3, "Verify")
-	renderPills(3, []string{"No", "Yes"}, m.configStabilityTestIdx)
-	sb.WriteString("\n")
-	sb.WriteString(styleDim.Render("  │          perform multi-packet packet loss & jitter stability test after scan") + "\n\n")
-
-	rowLabel(4, "Start")
+	rowLabel(3, "Start")
 	mode := "Phase 1 only"
 	if strings.TrimSpace(m.configInput.Value()) != "" {
-		if m.configStabilityTestIdx == 1 {
-			mode = "Phase 1 + 2 + 3 (Stability)"
-		} else {
-			mode = "Phase 1 + xray validation"
-		}
+		mode = "Phase 1 + xray validation"
 	}
-	if m.configOptionalRow == 4 {
+	if m.configOptionalRow == 3 {
 		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Background(lipgloss.Color("#F6821F")).Render(" "+mode+" ") + "\n")
 	} else {
 		sb.WriteString(styleNormal.Render(mode) + "\n")
@@ -2230,7 +2093,7 @@ func (m AppModel) handleConfigOptionalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "down", "j":
-		if m.configOptionalRow < 4 {
+		if m.configOptionalRow < 3 {
 			m.configOptionalRow++
 			m.configInput.Blur()
 			return m, nil
@@ -2247,11 +2110,6 @@ func (m AppModel) handleConfigOptionalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.configPhase2WorkersIdx--
 			}
 			return m, nil
-		} else if m.configOptionalRow == 3 {
-			if m.configStabilityTestIdx > 0 {
-				m.configStabilityTestIdx--
-			}
-			return m, nil
 		}
 	case "right", "l":
 		if m.configOptionalRow == 1 {
@@ -2262,11 +2120,6 @@ func (m AppModel) handleConfigOptionalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else if m.configOptionalRow == 2 {
 			if m.configPhase2WorkersIdx < len(phase2WorkersPresets)-1 {
 				m.configPhase2WorkersIdx++
-			}
-			return m, nil
-		} else if m.configOptionalRow == 3 {
-			if m.configStabilityTestIdx < 1 {
-				m.configStabilityTestIdx++
 			}
 			return m, nil
 		}
@@ -2293,10 +2146,6 @@ func (m AppModel) handleConfigOptionalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, textinput.Blink
 			}
 			m.configOptionalRow = 3
-			return m, nil
-		}
-		if m.configOptionalRow == 3 {
-			m.configOptionalRow = 4
 			return m, nil
 		}
 		return m.launchPhase1FromOptional()
@@ -2443,39 +2292,7 @@ func (m *AppModel) updateConfigProfileFromSettings() {
 	}
 }
 
-var stabilityProfileLabels = []string{"Fast Test", "Balanced", "Accurate", "Custom"}
 
-func (m *AppModel) applyStabilityProfile() {
-	switch m.stabilityProfileIdx {
-	case 0: // Fast Test
-		m.stabilityTriesIdx = 0    // 5 packets
-		m.stabilityIntervalIdx = 0 // 100ms
-		m.stabilityWorkersIdx = 2  // 50 workers
-		m.stabilityPortIdx = 0     // 443
-	case 1: // Balanced
-		m.stabilityTriesIdx = 1    // 10 packets
-		m.stabilityIntervalIdx = 1 // 200ms
-		m.stabilityWorkersIdx = 1  // 25 workers
-		m.stabilityPortIdx = 0     // 443
-	case 2: // Accurate
-		m.stabilityTriesIdx = 3    // 50 packets
-		m.stabilityIntervalIdx = 1 // 200ms
-		m.stabilityWorkersIdx = 0  // 10 workers
-		m.stabilityPortIdx = 0     // 443
-	}
-}
-
-func (m *AppModel) updateStabilityProfileFromSettings() {
-	if m.stabilityTriesIdx == 0 && m.stabilityIntervalIdx == 0 && m.stabilityWorkersIdx == 2 && m.stabilityPortIdx == 0 {
-		m.stabilityProfileIdx = 0
-	} else if m.stabilityTriesIdx == 1 && m.stabilityIntervalIdx == 1 && m.stabilityWorkersIdx == 1 && m.stabilityPortIdx == 0 {
-		m.stabilityProfileIdx = 1
-	} else if m.stabilityTriesIdx == 3 && m.stabilityIntervalIdx == 1 && m.stabilityWorkersIdx == 0 && m.stabilityPortIdx == 0 {
-		m.stabilityProfileIdx = 2
-	} else {
-		m.stabilityProfileIdx = 3
-	}
-}
 
 var configCountValues = []int{1000, 5000, 20000, 50000, 0} // 0 = custom
 var configCountLabels = []string{"Quick 1k", "Normal 5k", "Balanced 20k", "Deep 50k", "Custom"}
@@ -3523,456 +3340,6 @@ func (m AppModel) viewIPInfo() string {
 	return sb.String()
 }
 
-// ---------------------------------------------------------------------------
-// Stability Tester Views, Handlers, Helpers & Sorting
-// ---------------------------------------------------------------------------
-
-func getStabilityResult(ipStr string, results []*result.Result) *result.Result {
-	for _, r := range results {
-		if r.IP.String() == ipStr {
-			return r
-		}
-	}
-	return nil
-}
-
-func SortStabilityResults(results []*result.Result) {
-	sort.Slice(results, func(i, j int) bool {
-		r1 := results[i]
-		r2 := results[j]
-
-		// 1. Loss % ascending (lower is better)
-		loss1 := r1.Loss()
-		loss2 := r2.Loss()
-		if loss1 != loss2 {
-			return loss1 < loss2
-		}
-
-		// Both have same packet loss. If they are both 100% fail, it doesn't matter.
-		if loss1 >= 100 {
-			return false
-		}
-
-		// 2. Jitter ascending (lower is better)
-		jitter1 := r1.Jitter()
-		jitter2 := r2.Jitter()
-		if jitter1 != jitter2 {
-			return jitter1 < jitter2
-		}
-
-		// 3. Avg Latency ascending (lower is better)
-		avg1 := r1.Avg()
-		avg2 := r2.Avg()
-		return avg1 < avg2
-	})
-}
-
-func (m AppModel) viewStabilityTestSetup() string {
-	var sb strings.Builder
-	sb.WriteString(styleTitle.Render("\n  ⚡  Test IP Stability\n"))
-	sb.WriteString(fmt.Sprintf("%s\n\n", styleSep.Render("  "+strings.Repeat("─", minInt(m.width-4, 70)))))
-
-	rowLabel := func(row int, label string) {
-		if m.stabilitySetupRow == row {
-			sb.WriteString(styleAccent.Render(fmt.Sprintf("  ┃  %-8s  ", label)))
-		} else {
-			sb.WriteString(styleDim.Render(fmt.Sprintf("  │  %-8s  ", label)))
-		}
-	}
-
-	renderPills := func(row int, labels []string, selected int) {
-		isRowFocused := (m.stabilitySetupRow == row)
-		for i, label := range labels {
-			if i == selected {
-				if isRowFocused {
-					sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Background(lipgloss.Color("#F6821F")).Render(" " + label + " "))
-				} else {
-					sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F6821F")).Render("  " + label + "  "))
-				}
-			} else {
-				if isRowFocused {
-					sb.WriteString(styleNormal.Render("  " + label + "  "))
-				} else {
-					sb.WriteString(styleDim.Render("  " + label + "  "))
-				}
-			}
-			if i < len(labels)-1 {
-				sb.WriteString(styleDim.Render("│"))
-			}
-		}
-	}
-
-	// Row 0: Profile
-	rowLabel(0, "Profile")
-	renderPills(0, stabilityProfileLabels, m.stabilityProfileIdx)
-	sb.WriteString("\n")
-	var profileDesc string
-	switch m.stabilityProfileIdx {
-	case 0:
-		profileDesc = "Fast Test: 5 packets, 100ms interval, 50 workers"
-	case 1:
-		profileDesc = "Balanced: 10 packets, 200ms interval, 25 workers"
-	case 2:
-		profileDesc = "Accurate: 50 packets, 200ms interval, 10 workers (recommended for gaming)"
-	default:
-		profileDesc = "Custom: adjust parameters manually"
-	}
-	sb.WriteString(styleDim.Render("  │           "+profileDesc) + "\n\n")
-
-	// Row 1: Packets
-	rowLabel(1, "Packets")
-	renderPills(1, stabilityTriesLabels, m.stabilityTriesIdx)
-	sb.WriteString("\n")
-	if m.stabilityCustomMode && m.stabilityCustomRow == 1 {
-		sb.WriteString(styleAccent.Render("  │           custom packets: ") + m.configCustomInput.View() + "\n\n")
-	} else if stabilityTriesValues[m.stabilityTriesIdx] == 0 && m.stabilityTriesCustom != "" {
-		sb.WriteString(styleDim.Render(fmt.Sprintf("  │           probes sent per IP  (custom: %s)", m.stabilityTriesCustom)) + "\n\n")
-	} else {
-		sb.WriteString(styleDim.Render("  │           probes sent per IP") + "\n\n")
-	}
-
-	// Row 2: Interval
-	rowLabel(2, "Interval")
-	renderPills(2, stabilityIntervalLabels, m.stabilityIntervalIdx)
-	sb.WriteString("\n")
-	if m.stabilityCustomMode && m.stabilityCustomRow == 2 {
-		sb.WriteString(styleAccent.Render("  │           custom interval: ") + m.configCustomInput.View() + "\n\n")
-	} else if stabilityIntervalValues[m.stabilityIntervalIdx] == 0 && m.stabilityIntervalCustom != "" {
-		sb.WriteString(styleDim.Render(fmt.Sprintf("  │           delay between probes  (custom: %s)", m.stabilityIntervalCustom)) + "\n\n")
-	} else {
-		sb.WriteString(styleDim.Render("  │           delay between probes") + "\n\n")
-	}
-
-	// Row 3: Workers
-	rowLabel(3, "Workers")
-	renderPills(3, stabilityWorkersLabels, m.stabilityWorkersIdx)
-	sb.WriteString("\n")
-	if m.stabilityCustomMode && m.stabilityCustomRow == 3 {
-		sb.WriteString(styleAccent.Render("  │           custom workers: ") + m.configCustomInput.View() + "\n\n")
-	} else if stabilityWorkersValues[m.stabilityWorkersIdx] == 0 && m.stabilityWorkersCustom != "" {
-		sb.WriteString(styleDim.Render(fmt.Sprintf("  │           concurrent IPs to test  (custom: %s)", m.stabilityWorkersCustom)) + "\n\n")
-	} else {
-		sb.WriteString(styleDim.Render("  │           concurrent IPs to test") + "\n\n")
-	}
-
-	// Row 4: Port
-	rowLabel(4, "Port")
-	renderPills(4, stabilityPortLabels, m.stabilityPortIdx)
-	sb.WriteString("\n")
-	if m.stabilityCustomMode && m.stabilityCustomRow == 4 {
-		sb.WriteString(styleAccent.Render("  │           custom port: ") + m.configCustomInput.View() + "\n\n")
-	} else if stabilityPortValues[m.stabilityPortIdx] == 0 && m.stabilityPortCustom != "" {
-		sb.WriteString(styleDim.Render(fmt.Sprintf("  │           destination TCP port  (custom: %s)", m.stabilityPortCustom)) + "\n\n")
-	} else {
-		sb.WriteString(styleDim.Render("  │           destination TCP port") + "\n\n")
-	}
-
-	// Row 5: Start
-	rowLabel(5, "Start")
-	if m.stabilitySetupRow == 5 {
-		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Background(lipgloss.Color("#F6821F")).Render(" Begin Stability Test ") + "\n")
-	} else {
-		sb.WriteString(styleNormal.Render("Begin Stability Test") + "\n")
-	}
-	sb.WriteString(styleDim.Render("  │           tests all IPs in ips.txt and ranks by stability") + "\n\n")
-
-	hint := "  ↑/↓ row   ←/→ option   enter select/start   esc back"
-	if m.stabilityCustomMode {
-		hint = "  type value   enter confirm   esc cancel"
-	}
-	sb.WriteString(styleHint.Render(hint) + "\n")
-	if m.statusMsg != "" {
-		sb.WriteString(styleWarn.Render("  ⚠  "+m.statusMsg) + "\n")
-	}
-	return sb.String()
-}
-
-func renderStabilityMetadataGrid(width int, port string, tries int, interval time.Duration, done, total int, elapsed, eta string) string {
-	col1 := fmt.Sprintf(
-		"  %s %s\n  %s %s\n  %s %s",
-		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("Source:  "), styleNormal.Render("ips.txt"),
-		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("Packets: "), styleNormal.Render(fmt.Sprintf("%d", tries)),
-		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("Interval:"), styleDim.Render(formatDurationShort(interval)),
-	)
-
-	col2 := fmt.Sprintf(
-		"  %s %s\n  %s %s\n  %s %s",
-		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("Port:    "), styleAccent.Render(port),
-		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("Tested:  "), styleGood.Render(fmt.Sprintf("%d", done)),
-		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("Total:   "), styleDim.Render(fmt.Sprintf("%d", total)),
-	)
-
-	col3 := fmt.Sprintf(
-		"\n  %s %s\n  %s %s",
-		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("Elapsed: "), styleDim.Render(elapsed),
-		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("ETA:     "), styleDim.Render(eta),
-	)
-
-	innerWidth := width - 2
-	col1Width := 25
-	col2Width := 18
-	if innerWidth < col1Width+col2Width+15 {
-		col1Width = int(float64(innerWidth) * 0.38)
-		col2Width = int(float64(innerWidth) * 0.25)
-	}
-	col3Width := innerWidth - col1Width - col2Width
-
-	styleCol1 := lipgloss.NewStyle().Width(col1Width).Align(lipgloss.Left)
-	styleCol2 := lipgloss.NewStyle().Width(col2Width).Align(lipgloss.Left)
-	styleCol3 := lipgloss.NewStyle().Width(col3Width).Align(lipgloss.Left)
-
-	c1Rendered := styleCol1.Render(col1)
-	c2Rendered := styleCol2.Render(col2)
-	c3Rendered := styleCol3.Render(col3)
-
-	grid := lipgloss.JoinHorizontal(lipgloss.Top, c1Rendered, c2Rendered, c3Rendered)
-
-	borderStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#333344")).
-		Padding(1, 0, 1, 0).
-		Width(width - 2)
-
-	return borderStyle.Render(grid)
-}
-
-func stabilityHeader() string {
-	return fmt.Sprintf("  %-*s  %8s  %9s  %-22s  %s",
-		endpointColWidth, "ENDPOINT",
-		"LOSS",
-		"JITTER",
-		"MIN / AVG / MAX",
-		"COLO",
-	)
-}
-
-func stabilityRow(r *result.Result) string {
-	endpointStr := formatEndpoint(r.IP.String(), r.Port)
-	endpointFormatted := styleColEndpoint.Render(fmt.Sprintf("%-*s", endpointColWidth, endpointStr))
-
-	lossPercent := r.Loss()
-	lossStr := fmt.Sprintf("%6.1f%%", lossPercent)
-	var lossFormatted string
-	if lossPercent == 0 {
-		lossFormatted = styleColLoss0.Render(lossStr)
-	} else {
-		lossFormatted = styleColLossBad.Render(lossStr)
-	}
-
-	jitter := r.Jitter()
-	var jitterFormatted string
-	if r.Loss() >= 100 {
-		jitterFormatted = styleDim.Render("      -  ")
-	} else {
-		jitterFormatted = styleColLatencyMid.Render(fmt.Sprintf("%9s", formatDurationShort(jitter)))
-	}
-
-	var minAvgMax string
-	if r.Loss() >= 100 {
-		minAvgMax = styleDim.Render("          -           ")
-	} else {
-		minAvgMax = styleNormal.Render(fmt.Sprintf("%7s / %7s / %7s",
-			formatDurationShort(r.Min()),
-			formatDurationShort(r.Avg()),
-			formatDurationShort(r.Max()),
-		))
-	}
-
-	colo := r.Colo
-	if colo == "" {
-		colo = "---"
-	}
-	coloFormatted := fmt.Sprintf("%s%s%s",
-		styleColBracket.Render("["),
-		styleColColo.Render(fmt.Sprintf("%-3s", colo)),
-		styleColBracket.Render("]"),
-	)
-
-	return fmt.Sprintf("  %s  %s  %s  %s  %s",
-		endpointFormatted,
-		lossFormatted,
-		jitterFormatted,
-		minAvgMax,
-		coloFormatted,
-	)
-}
-
-func (m AppModel) viewStabilityTestProgress() string {
-	var sb strings.Builder
-	sb.WriteString(styleTitle.Render("\n  ⚡  IP Stability Test\n"))
-	sb.WriteString(fmt.Sprintf("%s\n\n", styleSep.Render("  "+strings.Repeat("─", minInt(m.width-4, 70)))))
-
-	done := len(m.stabilityResults)
-	total := m.stabilityTotal
-
-	elapsedStr := "-"
-	etaStr := "-"
-	if done > 0 {
-		elapsed := time.Since(m.scanStarted)
-		if m.stabilityDone && m.scanDuration > 0 {
-			elapsed = m.scanDuration
-		}
-		rate := float64(done) / elapsed.Seconds()
-		elapsedStr = formatDurationShort(elapsed)
-		etaStr = formatETA(done, total, rate, m.stabilityDone)
-	}
-
-	gridWidth := minInt(m.width-4, 76)
-	if gridWidth < 30 {
-		gridWidth = 30
-	}
-
-	tries, interval, _, port := m.resolveStabilityParams()
-
-	sb.WriteString(renderStabilityMetadataGrid(
-		gridWidth,
-		strconv.Itoa(port),
-		tries,
-		interval,
-		done,
-		total,
-		elapsedStr,
-		etaStr,
-	) + "\n")
-
-	if total > 0 {
-		sb.WriteString(renderProgressBar(gridWidth, done, total) + "\n")
-	}
-
-	if m.stabilityDone {
-		sb.WriteString(styleGood.Render("  ✓ Test completed!") + " " + styleNormal.Render("Press ") + styleAccent.Render("c") + styleNormal.Render(" to copy best IP, or ") + styleAccent.Render("s") + styleNormal.Render(" to save stable_ips.txt") + "\n")
-	}
-
-	if len(m.stabilityResults) > 0 {
-		sb.WriteString(fmt.Sprintf("%s\n%s\n",
-			styleHeader.Render(stabilityHeader()),
-			styleSep.Render(tableSeparator(74)),
-		))
-
-		topCount := m.height - 16
-		if topCount < 3 {
-			topCount = 3
-		}
-		if topCount > len(m.stabilityResults) {
-			topCount = len(m.stabilityResults)
-		}
-		for i := 0; i < topCount; i++ {
-			sb.WriteString(stabilityRow(m.stabilityResults[i]) + "\n")
-		}
-		sb.WriteRune('\n')
-	}
-
-	hint := "  esc back"
-	if m.stabilityDone {
-		hint = "  c copy best   s save stable_ips.txt   esc back"
-	}
-	sb.WriteString(styleHint.Render(hint) + "\n")
-	if m.statusMsg != "" {
-		sb.WriteString(styleWarn.Render("  "+m.statusMsg) + "\n")
-	}
-
-	return sb.String()
-}
-
-func (m AppModel) resolveStabilityParams() (int, time.Duration, int, int) {
-	tries := stabilityTriesValues[m.stabilityTriesIdx]
-	if tries == 0 {
-		t, _ := strconv.Atoi(m.stabilityTriesCustom)
-		if t > 0 {
-			tries = t
-		} else {
-			tries = 10
-		}
-	}
-
-	interval := stabilityIntervalValues[m.stabilityIntervalIdx]
-	if interval == 0 {
-		d, err := time.ParseDuration(m.stabilityIntervalCustom)
-		if err == nil && d > 0 {
-			interval = d
-		} else {
-			interval = 200 * time.Millisecond
-		}
-	}
-
-	workers := stabilityWorkersValues[m.stabilityWorkersIdx]
-	if workers == 0 {
-		w, _ := strconv.Atoi(m.stabilityWorkersCustom)
-		if w > 0 {
-			workers = w
-		} else {
-			workers = 25
-		}
-	}
-
-	port := stabilityPortValues[m.stabilityPortIdx]
-	if port == 0 {
-		p, _ := strconv.Atoi(m.stabilityPortCustom)
-		if p > 0 {
-			port = p
-		} else {
-			port = 443
-		}
-	}
-
-	return tries, interval, workers, port
-}
-
-
-
-func (m AppModel) handleStabilityTestProgressKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "esc":
-		if m.stabilityScanning {
-			if scanCancel != nil {
-				scanCancel()
-			}
-		}
-		if m.page == PageConfigPhase3 {
-			m.page = PageScanWithConfig
-		} else {
-			m.page = PageHome
-		}
-		m.stabilityScanning = false
-		m.stabilityDone = false
-		m.statusMsg = ""
-		return m, nil
-	case "c":
-		if m.stabilityDone && len(m.stabilityResults) > 0 {
-			best := m.stabilityResults[0]
-			text := formatEndpoint(best.IP.String(), best.Port)
-			clipboard.WriteAll(text)
-			m.statusMsg = fmt.Sprintf("copied best stable IP: %s", text)
-		}
-		return m, nil
-	case "s":
-		if m.stabilityDone && len(m.stabilityResults) > 0 {
-			m.statusMsg = m.saveStableIPs()
-		}
-		return m, nil
-	}
-	return m, nil
-}
-
-func (m AppModel) saveStableIPs() string {
-	if len(m.stabilityResults) == 0 {
-		return "no results to save"
-	}
-	var lines []string
-	for _, r := range m.stabilityResults {
-		lines = append(lines, formatEndpoint(r.IP.String(), r.Port))
-	}
-	dir, err := os.Getwd()
-	if err != nil {
-		return "failed to get current folder: " + err.Error()
-	}
-	path := filepath.Join(dir, "stable_ips.txt")
-	err = os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644)
-	if err != nil {
-		return "failed to save stable_ips.txt: " + err.Error()
-	}
-	return fmt.Sprintf("saved %d stable IPs to stable_ips.txt", len(lines))
-}
 
 func (m *AppModel) updatePhase1Top20(r *result.Result) {
 	if r == nil || !r.IsHealthy() {
