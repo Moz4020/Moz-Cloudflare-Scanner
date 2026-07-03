@@ -226,6 +226,15 @@ type AppModel struct {
 	stabilityCustomMode     bool
 	stabilityCustomRow      int // 1=tries, 2=interval, 3=workers, 4=port
 
+	// IP lookup state
+	ipInfoInput     textinput.Model
+	ipInfoResults   []*result.Result
+	ipInfoScanning  bool
+	ipInfoDone      bool
+	ipInfoTotal     int
+	ipInfoDoneCount int
+	ipInfoRow       int // 0=input, 1=start
+
 	// shared
 	statusMsg string
 	version   string
@@ -240,6 +249,7 @@ var menuEntries = []menuEntry{
 	{"Find Working IPs", "scan default Cloudflare or ips.txt ranges"},
 	{"Generate V2Ray Configs", "turn ips.txt + one VLESS URL into configs.txt"},
 	{"Test IP Stability", "measure packet loss and stability of IPs in ips.txt"},
+	{"IP Info / Lookup", "resolve COLO and details of individual IPs or ips.txt"},
 	{"About", ""},
 	{"Quit", ""},
 }
@@ -250,8 +260,9 @@ const (
 	menuFindWorking   = 0
 	menuGenerate      = 1
 	menuStabilityTest = 2
-	menuAbout         = 3
-	menuQuit          = 4
+	menuIPInfo        = 3
+	menuAbout         = 4
+	menuQuit          = 5
 )
 
 var modes = []string{"tls", "tcp", "http"}
@@ -314,6 +325,16 @@ func NewApp(version string) AppModel {
 	genPrefixInput.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#CCCCCC"))
 	genPrefixInput.PlaceholderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#555555"))
 	m.generatorPrefixInput = genPrefixInput
+
+	ipInput := textinput.New()
+	ipInput.Placeholder = "IPs, space/comma separated, or 'ips.txt' (leave empty to load ips.txt)"
+	ipInput.CharLimit = 2000
+	ipInput.Width = 58
+	ipInput.Prompt = "› "
+	ipInput.PromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#F6821F")).Bold(true)
+	ipInput.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#CCCCCC"))
+	ipInput.PlaceholderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#555555"))
+	m.ipInfoInput = ipInput
 
 	cfgCustom := textinput.New()
 	cfgCustom.Placeholder = "enter value"
@@ -448,6 +469,35 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.configResults = nil
 		return m, m.startConfigPhase2(phase2IPs)
 
+	case IPInfoStartMsg:
+		m.ipInfoTotal = msg.Total
+		m.ipInfoResults = nil
+		m.ipInfoScanning = true
+		m.ipInfoDone = false
+		m.ipInfoDoneCount = 0
+		m.scanStarted = time.Now()
+		return m, nil
+
+	case IPInfoResultMsg:
+		m.ipInfoResults = append(m.ipInfoResults, msg.Result)
+		m.ipInfoDoneCount++
+		sort.SliceStable(m.ipInfoResults, func(i, j int) bool {
+			a, b := m.ipInfoResults[i], m.ipInfoResults[j]
+			aLat := validationLatencyRank(a.Avg())
+			bLat := validationLatencyRank(b.Avg())
+			if aLat != bLat {
+				return aLat < bLat
+			}
+			return a.IP.String() < b.IP.String()
+		})
+		return m, nil
+
+	case IPInfoDoneMsg:
+		m.ipInfoScanning = false
+		m.ipInfoDone = true
+		m.scanDuration = time.Since(m.scanStarted)
+		return m, nil
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -482,6 +532,8 @@ func (m AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleStabilityTestSetupKey(msg)
 	case PageStabilityTestProgress:
 		return m.handleStabilityTestProgressKey(msg)
+	case PageIPInfo:
+		return m.handleIPInfoKey(msg)
 	}
 	return m, nil
 }
@@ -569,6 +621,16 @@ func (m AppModel) selectMenuItem() (tea.Model, tea.Cmd) {
 		m.configCustomInput.SetValue("")
 		m.configCustomInput.Blur()
 		return m, nil
+	case menuIPInfo:
+		m.page = PageIPInfo
+		m.ipInfoInput.SetValue("")
+		m.ipInfoInput.Focus()
+		m.ipInfoResults = nil
+		m.ipInfoScanning = false
+		m.ipInfoDone = false
+		m.ipInfoRow = 0
+		m.statusMsg = ""
+		return m, textinput.Blink
 	case menuAbout:
 		m.page = PageAbout
 	case menuQuit:
@@ -904,6 +966,12 @@ func (m AppModel) updateFormInputs(msg tea.Msg) (AppModel, tea.Cmd) {
 		}
 	}
 
+	if m.page == PageIPInfo && !m.ipInfoScanning && !m.ipInfoDone {
+		var cmd tea.Cmd
+		m.ipInfoInput, cmd = m.ipInfoInput.Update(msg)
+		cmds = append(cmds, cmd)
+	}
+
 	return m, tea.Batch(cmds...)
 }
 
@@ -931,6 +999,8 @@ func (m AppModel) View() string {
 		return m.viewStabilityTestSetup()
 	case PageStabilityTestProgress:
 		return m.viewStabilityTestProgress()
+	case PageIPInfo:
+		return m.viewIPInfo()
 	}
 	return ""
 }
@@ -3102,6 +3172,290 @@ func renderPhase2MetadataGrid(width int, done, total, success, failed, skipped i
 		Width(width - 2)
 
 	return borderStyle.Render(grid)
+}
+
+// ---------------------------------------------------------------------------
+// IP Info / Lookup Views, Handlers, Helpers & Sorting
+// ---------------------------------------------------------------------------
+
+func parseIPInfoInput(input string) ([]net.IP, error) {
+	input = strings.TrimSpace(input)
+	if input == "" || strings.ToLower(input) == "ips.txt" {
+		ips, err := loadDefaultIPsFile()
+		if err != nil {
+			return nil, fmt.Errorf("could not load default ips.txt: %w", err)
+		}
+		if len(ips) == 0 {
+			return nil, fmt.Errorf("ips.txt is empty")
+		}
+		return ips, nil
+	}
+
+	var ips []net.IP
+	seen := make(map[string]struct{})
+	input = strings.ReplaceAll(input, ",", " ")
+	input = strings.ReplaceAll(input, "\n", " ")
+	input = strings.ReplaceAll(input, "\r", " ")
+	input = strings.ReplaceAll(input, "\t", " ")
+
+	for _, field := range strings.Fields(input) {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		if strings.Contains(field, "/") {
+			cidrIPs, err := expandCIDRLine(field)
+			if err != nil {
+				return nil, err
+			}
+			for _, ip := range cidrIPs {
+				key := ip.String()
+				if _, exists := seen[key]; !exists {
+					seen[key] = struct{}{}
+					ips = append(ips, ip)
+				}
+			}
+			continue
+		}
+		host := field
+		if h, _, err := net.SplitHostPort(field); err == nil {
+			host = h
+		}
+		ip := net.ParseIP(host)
+		if ip != nil {
+			key := ip.String()
+			if _, exists := seen[key]; !exists {
+				seen[key] = struct{}{}
+				ips = append(ips, ip)
+			}
+		} else {
+			return nil, fmt.Errorf("invalid IP/endpoint/CIDR: %q", field)
+		}
+	}
+
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("no valid IPs parsed")
+	}
+	return ips, nil
+}
+
+func (m AppModel) handleIPInfoKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.ipInfoScanning {
+		if msg.String() == "esc" || msg.String() == "q" {
+			if scanCancel != nil {
+				scanCancel()
+			}
+			m.ipInfoScanning = false
+			m.ipInfoDone = false
+			m.page = PageHome
+			return m, nil
+		}
+		return m, nil
+	}
+
+	if m.ipInfoDone {
+		switch msg.String() {
+		case "esc", "q":
+			m.page = PageHome
+			m.ipInfoDone = false
+			return m, nil
+		case "c":
+			var sb strings.Builder
+			for _, r := range m.ipInfoResults {
+				colo := r.Colo
+				if colo == "" {
+					colo = "N/A"
+				}
+				sb.WriteString(fmt.Sprintf("%s,%s,%dms\n", r.IP, colo, r.Avg().Milliseconds()))
+			}
+			if clipboardWriteAll != nil {
+				_ = clipboardWriteAll(sb.String())
+				m.statusMsg = "copied resolved IP details to clipboard"
+			}
+			return m, nil
+		}
+		return m, nil
+	}
+
+	switch msg.String() {
+	case "esc":
+		m.page = PageHome
+		m.ipInfoInput.Blur()
+		return m, nil
+	case "up", "k":
+		if m.ipInfoRow > 0 {
+			m.ipInfoRow--
+			m.ipInfoInput.Focus()
+		}
+		return m, nil
+	case "down", "j":
+		if m.ipInfoRow < 1 {
+			m.ipInfoRow++
+			m.ipInfoInput.Blur()
+		}
+		return m, nil
+	case "enter":
+		if m.ipInfoRow == 0 {
+			m.ipInfoRow = 1
+			m.ipInfoInput.Blur()
+			return m, nil
+		}
+		ips, err := parseIPInfoInput(m.ipInfoInput.Value())
+		if err != nil {
+			m.statusMsg = err.Error()
+			m.ipInfoRow = 0
+			m.ipInfoInput.Focus()
+			return m, textinput.Blink
+		}
+		m.statusMsg = ""
+		m.ipInfoScanning = true
+		m.ipInfoDone = false
+		m.ipInfoResults = nil
+		m.ipInfoDoneCount = 0
+		m.scanStarted = time.Now()
+		return m, startIPInfoLookup(ips)
+	}
+
+	var cmd tea.Cmd
+	if m.ipInfoRow == 0 {
+		m.ipInfoInput, cmd = m.ipInfoInput.Update(msg)
+	}
+	return m, cmd
+}
+
+func (m AppModel) viewIPInfo() string {
+	var sb strings.Builder
+	sb.WriteString("\n" + styleTitle.Render("  IP Info / Lookup") + "\n")
+	sb.WriteString(fmt.Sprintf("%s\n\n", styleSep.Render("  "+strings.Repeat("─", minInt(m.width-4, 76)))))
+
+	if !m.ipInfoScanning && !m.ipInfoDone {
+		rowLabel := func(row int, text string) {
+			if m.ipInfoRow == row {
+				sb.WriteString(styleAccent.Render(text))
+			} else {
+				sb.WriteString(styleDim.Render(text))
+			}
+		}
+
+		rowLabel(0, "  IPs    ")
+		sb.WriteString(m.ipInfoInput.View() + "\n")
+		sb.WriteString(styleDim.Render("           enter comma-separated IPs, CIDRs, or type 'ips.txt' (empty loads ips.txt)") + "\n\n")
+
+		rowLabel(1, "  Lookup ")
+		if m.ipInfoRow == 1 {
+			sb.WriteString(styleAccent.Render("› ") + styleNormal.Render("Start Lookup") + "\n")
+		} else {
+			sb.WriteString(styleDim.Render("› Start Lookup") + "\n")
+		}
+		sb.WriteString(styleDim.Render("           press Enter here to query Cloudflare edge info for target IPs") + "\n\n")
+
+		if m.statusMsg != "" {
+			sb.WriteString(styleWarn.Render("  ⚠  "+m.statusMsg) + "\n\n")
+		}
+
+		sb.WriteString(styleHint.Render("  ↑/↓ navigate   enter select/confirm   esc back") + "\n")
+		return sb.String()
+	}
+
+	done := m.ipInfoDoneCount
+	total := m.ipInfoTotal
+
+	elapsedStr := "-"
+	etaStr := "-"
+	scanRateStr := "-"
+	if done > 0 {
+		elapsed := time.Since(m.scanStarted)
+		if m.ipInfoDone && m.scanDuration > 0 {
+			elapsed = m.scanDuration
+		}
+		rate := float64(done) / elapsed.Seconds()
+		elapsedStr = formatDurationShort(elapsed)
+		scanRateStr = formatRate(rate)
+		etaStr = formatETA(done, total, rate, m.ipInfoDone)
+	}
+
+	gridWidth := minInt(m.width-4, 76)
+	if gridWidth < 30 {
+		gridWidth = 30
+	}
+
+	col1 := fmt.Sprintf(
+		"  %s %s\n  %s %s",
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("Tested: "), styleAccent.Render(fmt.Sprintf("%d / %d", done, total)),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("Rate:   "), styleAccent.Render(scanRateStr),
+	)
+	col2 := fmt.Sprintf(
+		"  %s %s\n  %s %s",
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("Elapsed:"), styleDim.Render(elapsedStr),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("ETA:    "), styleDim.Render(etaStr),
+	)
+
+	styleCol1 := lipgloss.NewStyle().Width(gridWidth / 2).Align(lipgloss.Left)
+	styleCol2 := lipgloss.NewStyle().Width(gridWidth / 2).Align(lipgloss.Left)
+	grid := lipgloss.JoinHorizontal(lipgloss.Top, styleCol1.Render(col1), styleCol2.Render(col2))
+	border := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#333344")).Padding(1, 0, 1, 0).Width(gridWidth - 2)
+	sb.WriteString(border.Render(grid) + "\n\n")
+
+	if total > 0 {
+		sb.WriteString(renderProgressBar(gridWidth, done, total) + "\n\n")
+	}
+
+	if m.ipInfoDone {
+		sb.WriteString(styleGood.Render("  ✓ Lookup completed!") + " " + styleNormal.Render("Press ") + styleAccent.Render("c") + styleNormal.Render(" to copy IP details to clipboard") + "\n\n")
+	}
+
+	sb.WriteString(fmt.Sprintf("  %-25s  %8s  %9s  %-10s\n%s\n",
+		styleHeader.Render("IP ADDRESS"),
+		styleHeader.Render("COLO"),
+		styleHeader.Render("LATENCY"),
+		styleHeader.Render("STATUS"),
+		styleSep.Render(tableSeparator(74)),
+	))
+
+	maxRows := m.height - 18
+	if maxRows < 3 {
+		maxRows = 3
+	}
+	rows := m.ipInfoResults
+	if len(rows) > maxRows {
+		rows = rows[:maxRows]
+	}
+
+	for _, r := range rows {
+		if r == nil {
+			continue
+		}
+		status := "healthy"
+		if !r.TLSOk || r.HTTPStatus == 0 {
+			status = "failed"
+		}
+		colo := r.Colo
+		if colo == "" {
+			colo = "-"
+		}
+		latStr := "-"
+		if r.Avg() > 0 {
+			latStr = fmt.Sprintf("%dms", r.Avg().Milliseconds())
+		}
+		sb.WriteString(fmt.Sprintf("  %-25s  %8s  %9s  %-10s\n",
+			styleColEndpoint.Render(r.IP.String()),
+			styleAccent.Render(colo),
+			styleGood.Render(latStr),
+			styleDim.Render(status),
+		))
+	}
+	sb.WriteRune('\n')
+
+	hint := "  esc back"
+	if m.ipInfoDone {
+		hint = "  c copy details   esc back"
+	}
+	sb.WriteString(styleHint.Render(hint) + "\n")
+	if m.statusMsg != "" {
+		sb.WriteString(styleGood.Render("  "+m.statusMsg) + "\n")
+	}
+
+	return sb.String()
 }
 
 // ---------------------------------------------------------------------------

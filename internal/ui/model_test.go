@@ -17,8 +17,8 @@ import (
 )
 
 func TestMenuOnlyShowsMainWorkflow(t *testing.T) {
-	if len(menuEntries) != 5 {
-		t.Fatalf("menu entries = %d, want 5", len(menuEntries))
+	if len(menuEntries) != 6 {
+		t.Fatalf("menu entries = %d, want 6", len(menuEntries))
 	}
 	if menuEntries[0].label != "Find Working IPs" {
 		t.Fatalf("first menu item = %q, want Find Working IPs", menuEntries[0].label)
@@ -28,6 +28,9 @@ func TestMenuOnlyShowsMainWorkflow(t *testing.T) {
 	}
 	if menuEntries[2].label != "Test IP Stability" {
 		t.Fatalf("third menu item = %q, want Test IP Stability", menuEntries[2].label)
+	}
+	if menuEntries[3].label != "IP Info / Lookup" {
+		t.Fatalf("fourth menu item = %q, want IP Info / Lookup", menuEntries[3].label)
 	}
 	for _, entry := range menuEntries {
 		for _, removed := range []string{"Quick Scan", "Custom Scan", "Test IPs", "Discover Colos"} {
@@ -815,5 +818,20 @@ func TestConfigurationProfiles(t *testing.T) {
 	m.updateStabilityProfileFromSettings()
 	if m.stabilityProfileIdx != 1 {
 		t.Errorf("expected stability profile to auto-detect Balanced (1), got %d", m.stabilityProfileIdx)
+	}
+}
+
+func TestIPInfoParserAndLookup(t *testing.T) {
+	ips, err := parseIPInfoInput("1.1.1.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ips) != 1 || ips[0].String() != "1.1.1.1" {
+		t.Fatalf("parsed IPs = %v", ips)
+	}
+
+	_, err = parseIPInfoInput("invalid-ip")
+	if err == nil {
+		t.Fatal("expected error parsing invalid IP")
 	}
 }

@@ -672,3 +672,64 @@ func runStabilityTest(tries int, interval time.Duration, workers int, defaultPor
 		return StabilityStartMsg{Total: len(endpoints)}
 	}
 }
+
+// IPInfoResultMsg carries a single resolved IP info.
+type IPInfoResultMsg struct {
+	Result *result.Result
+}
+
+// IPInfoDoneMsg signals that all IP lookups are complete.
+type IPInfoDoneMsg struct{}
+
+// IPInfoStartMsg carries total count of IPs to resolve.
+type IPInfoStartMsg struct {
+	Total int
+}
+
+func startIPInfoLookup(ips []net.IP) tea.Cmd {
+	return func() tea.Msg {
+		go func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			scanCancel = cancel
+			defer cancel()
+
+			baseCfg := prober.Config{
+				Port:               443,
+				Mode:               prober.ModeHTTP,
+				Tries:              1,
+				Timeout:            3 * time.Second,
+				SNI:                "speed.cloudflare.com",
+				InsecureSkipVerify: true,
+				AcceptCFHTTPError:  true,
+			}
+
+			sem := make(chan struct{}, 20)
+			var wg sync.WaitGroup
+
+			for _, ip := range ips {
+				if ctx.Err() != nil {
+					break
+				}
+				sem <- struct{}{}
+				wg.Add(1)
+				go func(ip net.IP) {
+					defer func() {
+						<-sem
+						wg.Done()
+					}()
+					r := prober.Probe(ctx, ip, baseCfg)
+					if prog != nil {
+						prog.Send(IPInfoResultMsg{Result: r})
+					}
+				}(ip)
+			}
+
+			wg.Wait()
+			if ctx.Err() == nil && prog != nil {
+				prog.Send(IPInfoDoneMsg{})
+			}
+		}()
+
+		return IPInfoStartMsg{Total: len(ips)}
+	}
+}

@@ -13,4 +13,5 @@ const (
 	PageConfigPhase2   // xray config - xray validation
 	PageStabilityTestSetup
 	PageStabilityTestProgress
+	PageIPInfo
 )
