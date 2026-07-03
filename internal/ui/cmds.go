@@ -698,7 +698,7 @@ func startIPInfoLookup(ips []net.IP) tea.Cmd {
 				Mode:               prober.ModeHTTP,
 				Tries:              1,
 				Timeout:            3 * time.Second,
-				SNI:                "speed.cloudflare.com",
+				SNI:                "www.cloudflare.com",
 				InsecureSkipVerify: true,
 				AcceptCFHTTPError:  true,
 			}

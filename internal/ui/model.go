@@ -3421,7 +3421,7 @@ func (m AppModel) viewIPInfo() string {
 		sb.WriteString(styleGood.Render("  ✓ Lookup completed!") + " " + styleNormal.Render("Press ") + styleAccent.Render("c") + styleNormal.Render(" to copy IP details, or ") + styleAccent.Render("s") + styleNormal.Render(" to save to file") + "\n\n")
 	}
 
-	sb.WriteString(fmt.Sprintf("  %-25s  %8s  %9s  %-10s\n%s\n",
+	sb.WriteString(fmt.Sprintf("  %-25s  %-8s  %-9s  %-10s\n%s\n",
 		styleHeader.Render("IP ADDRESS"),
 		styleHeader.Render("COLO"),
 		styleHeader.Render("LATENCY"),
@@ -3456,8 +3456,8 @@ func (m AppModel) viewIPInfo() string {
 		}
 		sb.WriteString(fmt.Sprintf("  %s  %s  %s  %s\n",
 			styleColEndpoint.Render(fmt.Sprintf("%-25s", r.IP.String())),
-			styleAccent.Render(fmt.Sprintf("%8s", colo)),
-			styleGood.Render(fmt.Sprintf("%9s", latStr)),
+			styleAccent.Render(fmt.Sprintf("%-8s", colo)),
+			styleGood.Render(fmt.Sprintf("%-9s", latStr)),
 			styleDim.Render(fmt.Sprintf("%-10s", status)),
 		))
 	}
