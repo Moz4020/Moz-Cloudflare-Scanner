@@ -207,6 +207,7 @@ type AppModel struct {
 	configPhase1Total       int  // intended IP count for Phase 1 progress display
 	configPhase1Neighboring bool // true when scanning neighboring IPs
 	liveResultPath          string
+	configStabilityTestIdx  int
 
 	// stability tester properties
 	stabilityTriesIdx       int
@@ -248,7 +249,6 @@ type menuEntry struct {
 var menuEntries = []menuEntry{
 	{"Find Working IPs", "scan default Cloudflare or ips.txt ranges"},
 	{"Generate V2Ray Configs", "turn ips.txt + one VLESS URL into configs.txt"},
-	{"Test IP Stability", "measure packet loss and stability of IPs in ips.txt"},
 	{"IP Info / Lookup", "resolve COLO and details of individual IPs or ips.txt"},
 	{"About", ""},
 	{"Quit", ""},
@@ -259,10 +259,9 @@ const menuLabelWidth = 22
 const (
 	menuFindWorking   = 0
 	menuGenerate      = 1
-	menuStabilityTest = 2
-	menuIPInfo        = 3
-	menuAbout         = 4
-	menuQuit          = 5
+	menuIPInfo        = 2
+	menuAbout         = 3
+	menuQuit          = 4
 )
 
 var modes = []string{"tls", "tcp", "http"}
@@ -288,6 +287,7 @@ func NewApp(version string) AppModel {
 		configWorkersIdx:       1,
 		configTimeoutIdx:       1,
 		configPhase2WorkersIdx: 1, // default: Balanced 50
+		configStabilityTestIdx: 1, // default: Yes
 		stabilityProfileIdx:    1, // default: Balanced
 		stabilityTriesIdx:      1, // default: 10 packets
 		stabilityIntervalIdx:   1, // default: 200ms
@@ -385,6 +385,24 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case ConfigDoneMsg:
+		if m.configStabilityTestIdx == 1 && len(workingEndpoints(m.configResults)) > 0 {
+			working := workingEndpoints(m.configResults)
+			m.page = PageConfigPhase3
+			m.stabilityResults = nil
+			m.stabilityTotal = len(working)
+			m.stabilityScanning = true
+			m.stabilityDone = false
+			m.scanStarted = time.Now()
+
+			var endpoints []configEndpoint
+			for _, str := range working {
+				if ep, ok := parseEndpointLine(str, 443); ok {
+					endpoints = append(endpoints, ep)
+				}
+			}
+			return m, runIntegratedStabilityTest(endpoints, 10, 200*time.Millisecond, 25, 3*time.Second)
+		}
+
 		m.configScanning = false
 		m.configDone = true
 		m.scanDuration = time.Since(m.scanStarted)
@@ -407,12 +425,49 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.stabilityScanning = false
 		m.stabilityDone = true
 		m.scanDuration = time.Since(m.scanStarted)
+
+		if m.page == PageConfigPhase3 {
+			m.page = PageConfigPhase2
+			m.configScanning = false
+			m.configDone = true
+
+			sort.SliceStable(m.configResults, func(i, j int) bool {
+				r1 := m.configResults[i]
+				r2 := m.configResults[j]
+				if !r1.Success || !r2.Success {
+					if r1.Success {
+						return true
+					}
+					return false
+				}
+
+				s1 := getStabilityResult(r1.IP, m.stabilityResults)
+				s2 := getStabilityResult(r2.IP, m.stabilityResults)
+				if s1 != nil && s2 != nil {
+					loss1 := s1.Loss()
+					loss2 := s2.Loss()
+					if loss1 != loss2 {
+						return loss1 < loss2
+					}
+					if r1.Latency != r2.Latency {
+						return r1.Latency < r2.Latency
+					}
+					jitter1 := s1.Jitter()
+					jitter2 := s2.Jitter()
+					if jitter1 != jitter2 {
+						return jitter1 < jitter2
+					}
+				}
+
+				return r1.Latency < r2.Latency
+			})
+		}
 		return m, nil
 
 	case StabilityErrMsg:
 		m.stabilityScanning = false
 		m.stabilityDone = false
-		m.page = PageStabilityTestSetup
+		m.page = PageScanWithConfig
 		m.statusMsg = msg.Err
 		return m, nil
 
@@ -528,9 +583,7 @@ func (m AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleConfigPhase1Key(msg)
 	case PageConfigPhase2:
 		return m.handleScanWithConfigKey(msg)
-	case PageStabilityTestSetup:
-		return m.handleStabilityTestSetupKey(msg)
-	case PageStabilityTestProgress:
+	case PageConfigPhase3:
 		return m.handleStabilityTestProgressKey(msg)
 	case PageIPInfo:
 		return m.handleIPInfoKey(msg)
@@ -573,6 +626,7 @@ func (m AppModel) selectMenuItem() (tea.Model, tea.Cmd) {
 		m.configWorkersIdx = 1       // default: Balanced 100
 		m.configTimeoutIdx = 1       // default: Balanced 3s
 		m.configPhase2WorkersIdx = 1 // default: Balanced 50
+		m.configStabilityTestIdx = 1 // default: Yes
 		m.configPhase2WorkersCustom = ""
 		m.configIPMode = configIPSourceDefault // default: random Cloudflare IPs
 		m.configPortFocus = 0
@@ -601,26 +655,6 @@ func (m AppModel) selectMenuItem() (tea.Model, tea.Cmd) {
 		m.generatorCount = 0
 		m.statusMsg = ""
 		return m, textinput.Blink
-	case menuStabilityTest:
-		m.page = PageStabilityTestSetup
-		m.stabilityProfileIdx = 1  // default: Balanced
-		m.stabilityTriesIdx = 1    // default: 10 packets
-		m.stabilityIntervalIdx = 1 // default: 200ms
-		m.stabilityWorkersIdx = 1  // default: 25 workers
-		m.stabilityPortIdx = 0     // default: 443
-		m.stabilitySetupRow = 0
-		m.stabilityResults = nil
-		m.stabilityScanning = false
-		m.stabilityDone = false
-		m.stabilityCustomMode = false
-		m.stabilityTriesCustom = ""
-		m.stabilityIntervalCustom = ""
-		m.stabilityWorkersCustom = ""
-		m.stabilityPortCustom = ""
-		m.statusMsg = ""
-		m.configCustomInput.SetValue("")
-		m.configCustomInput.Blur()
-		return m, nil
 	case menuIPInfo:
 		m.page = PageIPInfo
 		m.ipInfoInput.SetValue("")
@@ -958,13 +992,6 @@ func (m AppModel) updateFormInputs(msg tea.Msg) (AppModel, tea.Cmd) {
 		}
 	}
 
-	if m.page == PageStabilityTestSetup {
-		if m.stabilityCustomMode {
-			var cmd tea.Cmd
-			m.configCustomInput, cmd = m.configCustomInput.Update(msg)
-			cmds = append(cmds, cmd)
-		}
-	}
 
 	if m.page == PageIPInfo && !m.ipInfoScanning && !m.ipInfoDone {
 		var cmd tea.Cmd
@@ -995,9 +1022,7 @@ func (m AppModel) View() string {
 		return m.viewConfigPhase1()
 	case PageConfigPhase2:
 		return m.viewScanWithConfig()
-	case PageStabilityTestSetup:
-		return m.viewStabilityTestSetup()
-	case PageStabilityTestProgress:
+	case PageConfigPhase3:
 		return m.viewStabilityTestProgress()
 	case PageIPInfo:
 		return m.viewIPInfo()
@@ -2074,12 +2099,21 @@ func (m AppModel) viewConfigOptional() string {
 		sb.WriteString(styleDim.Render(fmt.Sprintf("  │          Phase 2 xray workers; capped at %d for stability", maxPhase2Workers)) + "\n\n")
 	}
 
-	rowLabel(3, "Start")
+	rowLabel(3, "Verify")
+	renderPills(3, []string{"No", "Yes"}, m.configStabilityTestIdx)
+	sb.WriteString("\n")
+	sb.WriteString(styleDim.Render("  │          perform multi-packet packet loss & jitter stability test after scan") + "\n\n")
+
+	rowLabel(4, "Start")
 	mode := "Phase 1 only"
 	if strings.TrimSpace(m.configInput.Value()) != "" {
-		mode = "Phase 1 + xray validation"
+		if m.configStabilityTestIdx == 1 {
+			mode = "Phase 1 + 2 + 3 (Stability)"
+		} else {
+			mode = "Phase 1 + xray validation"
+		}
 	}
-	if m.configOptionalRow == 3 {
+	if m.configOptionalRow == 4 {
 		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Background(lipgloss.Color("#F6821F")).Render(" "+mode+" ") + "\n")
 	} else {
 		sb.WriteString(styleNormal.Render(mode) + "\n")
@@ -2196,7 +2230,7 @@ func (m AppModel) handleConfigOptionalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "down", "j":
-		if m.configOptionalRow < 3 {
+		if m.configOptionalRow < 4 {
 			m.configOptionalRow++
 			m.configInput.Blur()
 			return m, nil
@@ -2213,6 +2247,11 @@ func (m AppModel) handleConfigOptionalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.configPhase2WorkersIdx--
 			}
 			return m, nil
+		} else if m.configOptionalRow == 3 {
+			if m.configStabilityTestIdx > 0 {
+				m.configStabilityTestIdx--
+			}
+			return m, nil
 		}
 	case "right", "l":
 		if m.configOptionalRow == 1 {
@@ -2223,6 +2262,11 @@ func (m AppModel) handleConfigOptionalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else if m.configOptionalRow == 2 {
 			if m.configPhase2WorkersIdx < len(phase2WorkersPresets)-1 {
 				m.configPhase2WorkersIdx++
+			}
+			return m, nil
+		} else if m.configOptionalRow == 3 {
+			if m.configStabilityTestIdx < 1 {
+				m.configStabilityTestIdx++
 			}
 			return m, nil
 		}
@@ -2249,6 +2293,10 @@ func (m AppModel) handleConfigOptionalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, textinput.Blink
 			}
 			m.configOptionalRow = 3
+			return m, nil
+		}
+		if m.configOptionalRow == 3 {
+			m.configOptionalRow = 4
 			return m, nil
 		}
 		return m.launchPhase1FromOptional()
@@ -3479,6 +3527,15 @@ func (m AppModel) viewIPInfo() string {
 // Stability Tester Views, Handlers, Helpers & Sorting
 // ---------------------------------------------------------------------------
 
+func getStabilityResult(ipStr string, results []*result.Result) *result.Result {
+	for _, r := range results {
+		if r.IP.String() == ipStr {
+			return r
+		}
+	}
+	return nil
+}
+
 func SortStabilityResults(results []*result.Result) {
 	sort.Slice(results, func(i, j int) bool {
 		r1 := results[i]
@@ -3861,164 +3918,7 @@ func (m AppModel) resolveStabilityParams() (int, time.Duration, int, int) {
 	return tries, interval, workers, port
 }
 
-func (m AppModel) handleStabilityTestSetupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.stabilityCustomMode {
-		switch msg.String() {
-		case "enter":
-			val := strings.TrimSpace(m.configCustomInput.Value())
-			switch m.stabilityCustomRow {
-			case 1:
-				m.stabilityTriesCustom = val
-				m.updateStabilityProfileFromSettings()
-			case 2:
-				m.stabilityIntervalCustom = val
-				m.updateStabilityProfileFromSettings()
-			case 3:
-				m.stabilityWorkersCustom = val
-				m.updateStabilityProfileFromSettings()
-			case 4:
-				m.stabilityPortCustom = val
-				m.updateStabilityProfileFromSettings()
-			}
-			m.stabilityCustomMode = false
-			m.configCustomInput.Blur()
-			return m, nil
-		case "esc":
-			m.stabilityCustomMode = false
-			m.configCustomInput.Blur()
-			return m, nil
-		}
-		var cmd tea.Cmd
-		m.configCustomInput, cmd = m.configCustomInput.Update(msg)
-		return m, cmd
-	}
 
-	switch msg.String() {
-	case "esc":
-		m.page = PageHome
-		m.statusMsg = ""
-		return m, nil
-	case "up", "k":
-		if m.stabilitySetupRow > 0 {
-			m.stabilitySetupRow--
-		}
-		return m, nil
-	case "down", "j":
-		if m.stabilitySetupRow < 5 {
-			m.stabilitySetupRow++
-		}
-		return m, nil
-	case "left", "h":
-		switch m.stabilitySetupRow {
-		case 0:
-			if m.stabilityProfileIdx > 0 {
-				if m.stabilityProfileIdx == 3 {
-					m.stabilityProfileIdx = 2
-				} else {
-					m.stabilityProfileIdx--
-				}
-				m.applyStabilityProfile()
-			}
-		case 1:
-			if m.stabilityTriesIdx > 0 {
-				m.stabilityTriesIdx--
-				m.updateStabilityProfileFromSettings()
-			}
-		case 2:
-			if m.stabilityIntervalIdx > 0 {
-				m.stabilityIntervalIdx--
-				m.updateStabilityProfileFromSettings()
-			}
-		case 3:
-			if m.stabilityWorkersIdx > 0 {
-				m.stabilityWorkersIdx--
-				m.updateStabilityProfileFromSettings()
-			}
-		case 4:
-			if m.stabilityPortIdx > 0 {
-				m.stabilityPortIdx--
-				m.updateStabilityProfileFromSettings()
-			}
-		}
-		return m, nil
-	case "right", "l":
-		switch m.stabilitySetupRow {
-		case 0:
-			if m.stabilityProfileIdx < 2 {
-				m.stabilityProfileIdx++
-				m.applyStabilityProfile()
-			} else if m.stabilityProfileIdx == 3 {
-				m.stabilityProfileIdx = 1
-				m.applyStabilityProfile()
-			}
-		case 1:
-			if m.stabilityTriesIdx < len(stabilityTriesLabels)-1 {
-				m.stabilityTriesIdx++
-				m.updateStabilityProfileFromSettings()
-			}
-		case 2:
-			if m.stabilityIntervalIdx < len(stabilityIntervalLabels)-1 {
-				m.stabilityIntervalIdx++
-				m.updateStabilityProfileFromSettings()
-			}
-		case 3:
-			if m.stabilityWorkersIdx < len(stabilityWorkersLabels)-1 {
-				m.stabilityWorkersIdx++
-				m.updateStabilityProfileFromSettings()
-			}
-		case 4:
-			if m.stabilityPortIdx < len(stabilityPortLabels)-1 {
-				m.stabilityPortIdx++
-				m.updateStabilityProfileFromSettings()
-			}
-		}
-		return m, nil
-	case "enter":
-		if m.stabilitySetupRow == 1 && stabilityTriesValues[m.stabilityTriesIdx] == 0 {
-			m.stabilityCustomMode = true
-			m.stabilityCustomRow = 1
-			m.configCustomInput.SetValue(m.stabilityTriesCustom)
-			m.configCustomInput.Placeholder = "e.g. 15"
-			m.configCustomInput.Focus()
-			return m, textinput.Blink
-		}
-		if m.stabilitySetupRow == 2 && stabilityIntervalValues[m.stabilityIntervalIdx] == 0 {
-			m.stabilityCustomMode = true
-			m.stabilityCustomRow = 2
-			m.configCustomInput.SetValue(m.stabilityIntervalCustom)
-			m.configCustomInput.Placeholder = "e.g. 300ms"
-			m.configCustomInput.Focus()
-			return m, textinput.Blink
-		}
-		if m.stabilitySetupRow == 3 && stabilityWorkersValues[m.stabilityWorkersIdx] == 0 {
-			m.stabilityCustomMode = true
-			m.stabilityCustomRow = 3
-			m.configCustomInput.SetValue(m.stabilityWorkersCustom)
-			m.configCustomInput.Placeholder = "e.g. 30"
-			m.configCustomInput.Focus()
-			return m, textinput.Blink
-		}
-		if m.stabilitySetupRow == 4 && stabilityPortValues[m.stabilityPortIdx] == 0 {
-			m.stabilityCustomMode = true
-			m.stabilityCustomRow = 4
-			m.configCustomInput.SetValue(m.stabilityPortCustom)
-			m.configCustomInput.Placeholder = "e.g. 8443"
-			m.configCustomInput.Focus()
-			return m, textinput.Blink
-		}
-
-		if m.stabilitySetupRow == 5 {
-			m.page = PageStabilityTestProgress
-			m.stabilityScanning = true
-			m.stabilityDone = false
-			m.stabilityResults = nil
-			m.statusMsg = ""
-			tries, interval, workers, port := m.resolveStabilityParams()
-			return m, runStabilityTest(tries, interval, workers, port, 3*time.Second)
-		}
-	}
-	return m, nil
-}
 
 func (m AppModel) handleStabilityTestProgressKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
@@ -4028,7 +3928,11 @@ func (m AppModel) handleStabilityTestProgressKey(msg tea.KeyMsg) (tea.Model, tea
 				scanCancel()
 			}
 		}
-		m.page = PageStabilityTestSetup
+		if m.page == PageConfigPhase3 {
+			m.page = PageScanWithConfig
+		} else {
+			m.page = PageHome
+		}
 		m.stabilityScanning = false
 		m.stabilityDone = false
 		m.statusMsg = ""

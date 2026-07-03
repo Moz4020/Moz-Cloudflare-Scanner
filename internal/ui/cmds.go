@@ -733,3 +733,91 @@ func startIPInfoLookup(ips []net.IP) tea.Cmd {
 		return IPInfoStartMsg{Total: len(ips)}
 	}
 }
+
+func runIntegratedStabilityTest(endpoints []configEndpoint, tries int, interval time.Duration, workers int, timeout time.Duration) tea.Cmd {
+	return func() tea.Msg {
+		if prog == nil {
+			return nil
+		}
+		if len(endpoints) == 0 {
+			return StabilityDoneMsg{}
+		}
+
+		var ctx context.Context
+		ctx, scanCancel = context.WithCancel(context.Background())
+
+		go func() {
+			numWorkers := workers
+			if numWorkers > len(endpoints) {
+				numWorkers = len(endpoints)
+			}
+			if numWorkers <= 0 {
+				numWorkers = 1
+			}
+
+			type task struct {
+				endpoint configEndpoint
+			}
+			taskChan := make(chan task, len(endpoints))
+			for _, ep := range endpoints {
+				taskChan <- task{endpoint: ep}
+			}
+			close(taskChan)
+
+			var wg sync.WaitGroup
+			for i := 0; i < numWorkers; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					for {
+						select {
+						case <-ctx.Done():
+							return
+						case t, ok := <-taskChan:
+							if !ok {
+								return
+							}
+							ep := t.endpoint
+							r := &result.Result{
+								IP:        ep.IP,
+								Port:      ep.Port,
+								Latencies: make([]time.Duration, tries),
+							}
+
+							for j := 0; j < tries; j++ {
+								if ctx.Err() != nil {
+									break
+								}
+								start := time.Now()
+								conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ep.IP.String(), ep.Port), timeout)
+								duration := time.Since(start)
+
+								if err == nil {
+									conn.Close()
+									r.Latencies[j] = duration
+								} else {
+									r.Latencies[j] = 0
+								}
+
+								if j < tries-1 {
+									select {
+									case <-ctx.Done():
+										return
+									case <-time.After(interval):
+									}
+								}
+							}
+							prog.Send(StabilityResultMsg{Result: r})
+						}
+					}
+				}()
+			}
+			wg.Wait()
+			if ctx.Err() == nil {
+				prog.Send(StabilityDoneMsg{})
+			}
+		}()
+
+		return StabilityStartMsg{Total: len(endpoints)}
+	}
+}

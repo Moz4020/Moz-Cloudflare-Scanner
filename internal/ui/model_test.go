@@ -17,8 +17,8 @@ import (
 )
 
 func TestMenuOnlyShowsMainWorkflow(t *testing.T) {
-	if len(menuEntries) != 6 {
-		t.Fatalf("menu entries = %d, want 6", len(menuEntries))
+	if len(menuEntries) != 5 {
+		t.Fatalf("menu entries = %d, want 5", len(menuEntries))
 	}
 	if menuEntries[0].label != "Find Working IPs" {
 		t.Fatalf("first menu item = %q, want Find Working IPs", menuEntries[0].label)
@@ -26,11 +26,8 @@ func TestMenuOnlyShowsMainWorkflow(t *testing.T) {
 	if menuEntries[1].label != "Generate V2Ray Configs" {
 		t.Fatalf("second menu item = %q, want Generate V2Ray Configs", menuEntries[1].label)
 	}
-	if menuEntries[2].label != "Test IP Stability" {
-		t.Fatalf("third menu item = %q, want Test IP Stability", menuEntries[2].label)
-	}
-	if menuEntries[3].label != "IP Info / Lookup" {
-		t.Fatalf("fourth menu item = %q, want IP Info / Lookup", menuEntries[3].label)
+	if menuEntries[2].label != "IP Info / Lookup" {
+		t.Fatalf("third menu item = %q, want IP Info / Lookup", menuEntries[2].label)
 	}
 	for _, entry := range menuEntries {
 		for _, removed := range []string{"Quick Scan", "Custom Scan", "Test IPs", "Discover Colos"} {
