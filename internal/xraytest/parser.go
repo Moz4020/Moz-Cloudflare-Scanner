@@ -21,7 +21,7 @@ type VLESSConfig struct {
 	Port    int
 
 	// XHTTP transport
-	Network    string // xhttp or splithttp
+	Network    string // xhttp
 	Path       string
 	Host       string
 	Mode       string
@@ -116,7 +116,7 @@ func ParseVLESS(raw string) (*VLESSConfig, error) {
 	}
 
 	switch cfg.Network {
-	case "xhttp", "splithttp":
+	case "xhttp":
 		cfg.Path = paramOr(params, "path", "/")
 		cfg.Host = paramOr(params, "host", cfg.SNI)
 		cfg.Mode = paramOr(params, "mode", "auto")
@@ -127,7 +127,7 @@ func ParseVLESS(raw string) (*VLESSConfig, error) {
 	case "":
 		return nil, fmt.Errorf("unsupported transport: missing type=xhttp")
 	default:
-		return nil, fmt.Errorf("unsupported transport %q — this scanner accepts only xhttp or splithttp", cfg.Network)
+		return nil, fmt.Errorf("unsupported transport %q — this scanner accepts only xhttp", cfg.Network)
 	}
 
 	// ALPN
@@ -160,6 +160,9 @@ func (c *VLESSConfig) ToShareURL() string {
 	params.Set("encryption", c.Encryption)
 	params.Set("security", c.Security)
 	params.Set("type", c.Network)
+	if c.Flow != "" {
+		params.Set("flow", c.Flow)
+	}
 
 	if c.SNI != "" {
 		params.Set("sni", c.SNI)

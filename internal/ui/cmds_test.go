@@ -16,8 +16,8 @@ func TestConfigProbeFromURLUsesHTTPForXHTTPPhase1(t *testing.T) {
 	if cfg.Port != 443 {
 		t.Fatalf("port = %d, want 443", cfg.Port)
 	}
-	if cfg.Tries != 2 {
-		t.Fatalf("tries = %d, want 2", cfg.Tries)
+	if cfg.Tries != 1 {
+		t.Fatalf("tries = %d, want 1", cfg.Tries)
 	}
 	if cfg.Mode.String() != "http" {
 		t.Fatalf("mode = %s, want http", cfg.Mode.String())

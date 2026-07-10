@@ -34,6 +34,8 @@ type Config struct {
 	SpeedBytes         int64  // optional HTTP download sample size; 0 disables it
 	InsecureSkipVerify bool   // skip TLS cert verification (use for Phase 1 where Phase 2 validates properly)
 	AcceptCFHTTPError  bool   // accept any Cloudflare HTTP response when xray will validate next
+	XHTTPPath          string // custom path for XHTTP probing
+	XHTTPHost          string // custom Host header for XHTTP probing
 }
 
 // WithPort returns a copy of Config targeting another remote port.
@@ -48,7 +50,7 @@ type Mode int
 const (
 	ModeTCP  Mode = iota // bare TCP connect
 	ModeTLS              // TLS handshake (no HTTP)
-	ModeHTTP             // full HTTPS GET /cdn-cgi/trace
+	ModeHTTP             // full HTTPS GET /cdn-cgi/trace or XHTTPPath
 )
 
 func (m Mode) String() string {
@@ -96,7 +98,11 @@ func Probe(ctx context.Context, ip net.IP, cfg Config) *result.Result {
 		}
 		sni := cfg.SNI
 		if sni == "" && cfg.Mode == ModeHTTP {
-			sni = "speed.cloudflare.com"
+			if cfg.XHTTPHost != "" {
+				sni = cfg.XHTTPHost
+			} else {
+				sni = "speed.cloudflare.com"
+			}
 		} else if sni == "" {
 			sni = sniHostnames[rand.Intn(len(sniHostnames))]
 		}
@@ -113,7 +119,7 @@ func Probe(ctx context.Context, ip net.IP, cfg Config) *result.Result {
 		case ModeTLS:
 			lat, tlsOk = probeTLS(ctx, ip, cfg.Port, sni, cfg.Timeout, cfg.InsecureSkipVerify)
 		case ModeHTTP:
-			lat, tlsOk, httpStatus, colo, throughput = probeHTTP(ctx, ip, cfg.Port, sni, cfg.Timeout, cfg.SpeedBytes, cfg.InsecureSkipVerify)
+			lat, tlsOk, httpStatus, colo, throughput = probeHTTP(ctx, ip, cfg.Port, sni, cfg.Timeout, cfg.SpeedBytes, cfg.InsecureSkipVerify, cfg.XHTTPPath, cfg.XHTTPHost)
 		}
 
 		r.Latencies[i] = lat
@@ -190,8 +196,8 @@ func probeTLS(ctx context.Context, ip net.IP, port int, sni string, timeout time
 }
 
 // probeHTTP fetches /cdn-cgi/trace to confirm the IP is a real Cloudflare edge
-// and to determine the colo identifier.
-func probeHTTP(ctx context.Context, ip net.IP, port int, sni string, timeout time.Duration, speedBytes int64, insecure bool) (
+// and to determine the colo identifier. If xhttpPath is provided, it fetches that instead.
+func probeHTTP(ctx context.Context, ip net.IP, port int, sni string, timeout time.Duration, speedBytes int64, insecure bool, xhttpPath string, xhttpHost string) (
 	lat time.Duration, tlsOk bool, httpStatus int, colo string, throughput float64,
 ) {
 	addr := fmt.Sprintf("%s:%d", ip.String(), port)
@@ -228,10 +234,16 @@ func probeHTTP(ctx context.Context, ip net.IP, port int, sni string, timeout tim
 		scheme = "http"
 	}
 	url := fmt.Sprintf("%s://%s/cdn-cgi/trace", scheme, sni)
+	if xhttpPath != "" {
+		url = fmt.Sprintf("%s://%s%s", scheme, sni, xhttpPath)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return
+	}
+	if xhttpHost != "" {
+		req.Host = xhttpHost
 	}
 	req.Header.Set("User-Agent", "moz-cloudflare-scanner/1.0")
 

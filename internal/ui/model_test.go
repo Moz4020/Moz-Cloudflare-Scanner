@@ -49,26 +49,17 @@ func TestAboutMentionsLinuxVPS(t *testing.T) {
 	}
 }
 
-func TestConfigOptionalShowsPhase2WorkerCap(t *testing.T) {
-	m := NewApp("test")
-	m.configOptionalRow = 2
-	view := m.viewConfigOptional()
-	if !strings.Contains(view, fmt.Sprintf("capped at %d", maxPhase2Workers)) {
-		t.Fatalf("optional config view does not show worker cap: %q", view)
-	}
-}
-
 func TestResolvePhase1OptionsUsesRandomCloudflareDefaults(t *testing.T) {
 	m := NewApp("test")
 	m.configURL = "vless://12345678-1234-1234-1234-123456789abc@example.com:443?encryption=none&security=tls&type=xhttp&host=example.com&path=%2F#test"
-	m.configCountIdx = 2
+	m.configProfileIdx = 1 // Balanced
 
 	opts := m.resolvePhase1Options()
-	if opts.count != 20000 {
-		t.Fatalf("count = %d, want 20000", opts.count)
+	if opts.count != 10000 {
+		t.Fatalf("count = %d, want 10000", opts.count)
 	}
-	if opts.concurrency != 100 {
-		t.Fatalf("concurrency = %d, want 100", opts.concurrency)
+	if opts.concurrency != 200 {
+		t.Fatalf("concurrency = %d, want 200", opts.concurrency)
 	}
 	if opts.timeout.String() != "3s" {
 		t.Fatalf("timeout = %s, want 3s", opts.timeout)
@@ -90,13 +81,24 @@ func TestResolvePhase1OptionsFromFile(t *testing.T) {
 	}
 }
 
-func TestResolveConfigPortsMultiSelect(t *testing.T) {
+func TestResolveConfigPortsConfigURL(t *testing.T) {
 	m := NewApp("test")
-	m.configURL = "vless://12345678-1234-1234-1234-123456789abc@example.com:443?encryption=none&security=tls&type=xhttp&host=example.com&path=%2F#test"
-	m.configSelectedPorts = map[int]bool{443: true, 8443: true}
+	m.configPortsIdx = 0 // Config URL
+	m.configInput.SetValue("vless://uuid@example.com:8443?type=xhttp")
 
 	got := m.resolveConfigPorts()
-	want := []string{"443", "8443"}
+	if len(got) != 1 || got[0] != 8443 {
+		t.Fatalf("expected port 8443, got %v", got)
+	}
+}
+
+func TestResolveConfigPortsCustom(t *testing.T) {
+	m := NewApp("test")
+	m.configPortsIdx = 1 // Custom
+	m.configPortsInput.SetValue("8443,2053,2083")
+
+	got := m.resolveConfigPorts()
+	want := []string{"8443", "2053", "2083"}
 	parts := make([]string, len(got))
 	for i, port := range got {
 		parts[i] = strconv.Itoa(port)
@@ -288,8 +290,8 @@ func TestWorkingEndpointsKeepsFastestDuplicate(t *testing.T) {
 func TestVisibleValidationRowsFinishedPrefersStableWorkingResults(t *testing.T) {
 	rows := visibleValidationRows([]*xraytest.ValidationResult{
 		{IP: "104.18.1.3", Port: 443, Success: false, Error: "failed"},
-		{IP: "104.18.1.2", Port: 443, Success: true, Successes: 3, Attempts: 3, Throughput: 200 * 1024, Latency: 180 * time.Millisecond},
-		{IP: "104.18.1.1", Port: 443, Success: true, Successes: 2, Attempts: 3, Throughput: 900 * 1024, Latency: 70 * time.Millisecond},
+		{IP: "104.18.1.2", Port: 443, Success: true, Successes: 3, Attempts: 3, Latency: 180 * time.Millisecond},
+		{IP: "104.18.1.1", Port: 443, Success: true, Successes: 2, Attempts: 3, Latency: 70 * time.Millisecond},
 	}, 3, true)
 	if len(rows) != 3 {
 		t.Fatalf("rows = %d, want 3", len(rows))
@@ -383,8 +385,26 @@ func TestGenerateV2RayConfigsWritesConfigsTxt(t *testing.T) {
 	}
 }
 
+func TestGeneratorNavigationKeepsOnlyCurrentInputFocused(t *testing.T) {
+	m := NewApp("test")
+	m.generatorRow = 0
+	m.generatorInput.Focus()
+
+	next, _ := m.handleGenerateConfigsKey(tea.KeyMsg{Type: tea.KeyDown})
+	m = next.(AppModel)
+	if m.generatorRow != 1 || m.generatorInput.Focused() || !m.generatorPrefixInput.Focused() {
+		t.Fatal("prefix input should be the only focused input after moving down")
+	}
+
+	next, _ = m.handleGenerateConfigsKey(tea.KeyMsg{Type: tea.KeyDown})
+	m = next.(AppModel)
+	if m.generatorRow != 2 || m.generatorInput.Focused() || m.generatorPrefixInput.Focused() {
+		t.Fatal("both inputs should be blurred on the generate action")
+	}
+}
+
 func TestOnlyCurrentWorkflowPagesRemain(t *testing.T) {
-	if PageConfigPhase2 != 6 {
+	if PageConfigPhase2 != 5 {
 		t.Fatalf("page enum includes removed legacy scan pages; last page = %d", PageConfigPhase2)
 	}
 }
@@ -398,102 +418,80 @@ func TestCleanPastedConfigURLUsesFirstNonEmptyLine(t *testing.T) {
 
 func TestPastedConfigDoesNotLaunchScan(t *testing.T) {
 	m := NewApp("test")
-	m.page = PageConfigOptional
-	m.configOptionalRow = 0
+	m.page = PageScanWithConfig
+	m.configSetupRow = 4
 
-	next, cmd := m.handleConfigOptionalKey(tea.KeyMsg{
+	// Focus input
+	m.configInput.Focus()
+
+	next, _ := m.handleScanWithConfigKey(tea.KeyMsg{
 		Type:  tea.KeyRunes,
-		Runes: []rune("vless://uuid@example.com:443?type=xhttp\n"),
+		Runes: []rune("vless://uuid@example.com:443?type=xhttp"),
 		Paste: true,
 	})
 	got := next.(AppModel)
-	if cmd != nil {
-		t.Fatal("paste returned a command; want nil")
-	}
-	if got.page != PageConfigOptional {
-		t.Fatalf("page = %v, want PageConfigOptional", got.page)
+	if got.page != PageScanWithConfig {
+		t.Fatalf("page = %v, want PageScanWithConfig", got.page)
 	}
 	if got.configInput.Value() != "vless://uuid@example.com:443?type=xhttp" {
 		t.Fatalf("config input = %q", got.configInput.Value())
-	}
-	if !strings.Contains(got.statusMsg, "press Enter") {
-		t.Fatalf("status = %q", got.statusMsg)
 	}
 }
 
 func TestTrailingPasteEntersDoNotLaunchScan(t *testing.T) {
 	m := NewApp("test")
-	m.page = PageConfigOptional
-	m.configOptionalRow = 0
+	m.page = PageScanWithConfig
+	m.configSetupRow = 4
 	m.configInput.SetValue("vless://uuid@example.com:443?type=xhttp")
 
-	next, cmd := m.handleConfigOptionalKey(tea.KeyMsg{Type: tea.KeyEnter})
+	next, _ := m.handleScanWithConfigKey(tea.KeyMsg{Type: tea.KeyEnter})
 	m = next.(AppModel)
-	if cmd != nil {
-		t.Fatal("first enter returned command; want nil")
-	}
-	if m.configOptionalRow != 1 {
-		t.Fatalf("row after first enter = %d, want 1", m.configOptionalRow)
-	}
-
-	next, cmd = m.handleConfigOptionalKey(tea.KeyMsg{Type: tea.KeyEnter})
-	m = next.(AppModel)
-	if cmd != nil {
-		t.Fatal("second enter returned command; want nil")
-	}
-	if m.configOptionalRow != 2 {
-		t.Fatalf("row after second enter = %d, want 2", m.configOptionalRow)
+	if m.configSetupRow != 5 {
+		t.Fatalf("row after first enter = %d, want 5", m.configSetupRow)
 	}
 }
 
 func TestConfigInputRowDoesNotTreatKAsNavigation(t *testing.T) {
 	m := NewApp("test")
-	m.page = PageConfigOptional
-	m.configOptionalRow = 0
+	m.page = PageScanWithConfig
+	m.configSetupRow = 4
 
-	next, _ := m.handleConfigOptionalKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	m.configInput.Focus()
+
+	next, _ := m.handleScanWithConfigKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
 	got := next.(AppModel)
 	if got.configInput.Value() != "k" {
 		t.Fatalf("config input = %q, want k", got.configInput.Value())
 	}
-	if got.configOptionalRow != 0 {
-		t.Fatalf("row = %d, want 0", got.configOptionalRow)
+	if got.configSetupRow != 4 {
+		t.Fatalf("row = %d, want 4", got.configSetupRow)
 	}
 }
 
 func TestConfigInputRowValidationAndNavigationBlock(t *testing.T) {
 	m := NewApp("test")
-	m.page = PageConfigOptional
-	m.configOptionalRow = 0
+	m.page = PageScanWithConfig
+	m.configSetupRow = 4
 
-	// 1. Paste invalid URL
-	next, _ := m.handleConfigOptionalKey(tea.KeyMsg{
-		Type:  tea.KeyRunes,
-		Runes: []rune("trojan://uuid@example.com:443?type=ws"),
-		Paste: true,
-	})
+	// 1. Enter invalid URL
+	m.configInput.SetValue("trojan://uuid@example.com:443?type=ws")
+	next, _ := m.handleScanWithConfigKey(tea.KeyMsg{Type: tea.KeyEnter})
 	got := next.(AppModel)
 	if !strings.Contains(got.statusMsg, "invalid URL") {
-		t.Fatalf("statusMsg should show invalid URL on paste, got: %q", got.statusMsg)
+		t.Fatalf("statusMsg should show invalid URL on enter, got: %q", got.statusMsg)
 	}
 
-	// 2. Try to move down/enter with invalid config — should block navigation
-	got.configInput.SetValue("invalid-config-url")
-	next2, _ := got.handleConfigOptionalKey(tea.KeyMsg{Type: tea.KeyEnter})
-	got2 := next2.(AppModel)
-	if got2.configOptionalRow != 0 {
-		t.Fatalf("expected optional row to remain 0 (blocked navigation), got %d", got2.configOptionalRow)
-	}
-	if !strings.Contains(got2.statusMsg, "invalid URL") {
-		t.Fatalf("expected status message warning on block, got: %q", got2.statusMsg)
+	// 2. Try to navigate with invalid config — should block navigation on enter
+	if got.configSetupRow != 4 {
+		t.Fatalf("expected row to remain 4 (blocked navigation), got %d", got.configSetupRow)
 	}
 
 	// 3. Clear/Correct input and try again — should allow navigation
-	got2.configInput.SetValue("")
-	next3, _ := got2.handleConfigOptionalKey(tea.KeyMsg{Type: tea.KeyEnter})
+	got.configInput.SetValue("")
+	next3, _ := got.handleScanWithConfigKey(tea.KeyMsg{Type: tea.KeyEnter})
 	got3 := next3.(AppModel)
-	if got3.configOptionalRow != 1 {
-		t.Fatalf("expected row to advance to 1 with empty config, got %d", got3.configOptionalRow)
+	if got3.configSetupRow != 5 {
+		t.Fatalf("expected row to advance to 5 with empty config, got %d", got3.configSetupRow)
 	}
 	if got3.statusMsg != "" {
 		t.Fatalf("expected statusMsg to be cleared, got %q", got3.statusMsg)
@@ -641,6 +639,23 @@ func TestClampPhase2Workers(t *testing.T) {
 	}
 }
 
+func TestResolveTopNUsesProfileAndAdvancedAll(t *testing.T) {
+	m := NewApp("test")
+	m.configProfileIdx = 0
+	if got := m.resolveTopN(); got != 25 {
+		t.Fatalf("quick cap = %d, want 25", got)
+	}
+	m.configProfileIdx = 2
+	if got := m.resolveTopN(); got != 100 {
+		t.Fatalf("deep cap = %d, want 100", got)
+	}
+	m.configAdvanced = true
+	m.configTopNOverride = 0
+	if got := m.resolveTopN(); got != 0 {
+		t.Fatalf("advanced all cap = %d, want 0", got)
+	}
+}
+
 func TestUniquePhase2Candidates(t *testing.T) {
 	got := uniquePhase2Candidates([]*result.Result{
 		phase2CandidateForTest("104.18.1.1", 100*time.Millisecond),
@@ -706,9 +721,7 @@ func maxPhase2LatencyForTest(results []*result.Result) time.Duration {
 	return max
 }
 
-
 func TestConfigurationProfiles(t *testing.T) {
-	// 1. Check IP scanner presets
 	m := NewApp("test")
 
 	// Default should be Balanced (1)
@@ -716,28 +729,25 @@ func TestConfigurationProfiles(t *testing.T) {
 		t.Fatalf("expected default configProfileIdx = 1, got %d", m.configProfileIdx)
 	}
 
-	// Change to Fast (0) and apply
+	// Test Quick (0) values
 	m.configProfileIdx = 0
-	m.applyConfigProfile()
-	if m.configCountIdx != 1 || m.configWorkersIdx != 2 || m.configTimeoutIdx != 0 {
-		t.Errorf("Fast profile didn't set correct values: count=%d workers=%d timeout=%d",
-			m.configCountIdx, m.configWorkersIdx, m.configTimeoutIdx)
+	opts := m.resolvePhase1Options()
+	if opts.count != 5000 || opts.concurrency != 200 || opts.timeout.String() != "2s" {
+		t.Errorf("Quick profile resolved wrong values: %+v", opts)
 	}
 
-	// Change count and verify it shifts to Custom (3)
-	m.configCountIdx = 2
-	m.updateConfigProfileFromSettings()
-	if m.configProfileIdx != 3 {
-		t.Errorf("expected profile to drop to Custom (3), got %d", m.configProfileIdx)
+	// Test Balanced (1) values
+	m.configProfileIdx = 1
+	opts = m.resolvePhase1Options()
+	if opts.count != 10000 || opts.concurrency != 200 || opts.timeout.String() != "3s" {
+		t.Errorf("Balanced profile resolved wrong values: %+v", opts)
 	}
 
-	// Restore Fast settings manually and verify it auto-detects Fast (0)
-	m.configCountIdx = 1
-	m.configWorkersIdx = 2
-	m.configTimeoutIdx = 0
-	m.updateConfigProfileFromSettings()
-	if m.configProfileIdx != 0 {
-		t.Errorf("expected profile to auto-detect Fast (0), got %d", m.configProfileIdx)
+	// Test Deep (2) values
+	m.configProfileIdx = 2
+	opts = m.resolvePhase1Options()
+	if opts.count != 20000 || opts.concurrency != 200 || opts.timeout.String() != "5s" {
+		t.Errorf("Deep profile resolved wrong values: %+v", opts)
 	}
 }
 

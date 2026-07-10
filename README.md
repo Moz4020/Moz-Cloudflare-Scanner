@@ -1,108 +1,83 @@
 # Moz Cloudflare Scanner
 
-Find Cloudflare IPs that work with your **VLESS XHTTP** config, then save the working `IP:port` endpoints for v2rayN, NekoRay, Hiddify, or another Xray-based client.
+An easy terminal app for finding Cloudflare `IP:port` endpoints that work with **your VLESS XHTTP configuration**. It is designed for Windows users and Linux VPS users who want to scan, copy the working results, and use them in their client.
 
-This app is made for people who just want to scan. You do not need Go, coding knowledge, or a terminal build setup if you download the release files.
+## What you need
 
-## Download
+- A working `vless://` link with `type=xhttp`.
+- Windows 10/11 or a Linux VPS.
+- Permission to test the configuration and endpoints you use.
 
-From the GitHub **Releases** page, download the file for your system:
+No Go installation or coding knowledge is needed when using a release build.
 
-```text
-Windows: moz-cloudflare-scanner-windows-amd64-1.0.zip
-Linux:   moz-cloudflare-scanner-linux-amd64-1.0.tar.gz
-```
+## Quick start (Windows)
 
-## Windows
+1. Download and extract the Windows release zip.
+2. Open the extracted folder and run `moz-cloudflare-scanner.exe`.
+3. On the main menu, choose **Find Cloudflare IPs**.
+4. Keep **Default CF** and **Balanced** selected for your first scan.
+5. Paste your working VLESS XHTTP link on the **Config** row.
+6. On **Files**, choose whether to create a live scan report. Turn it off for an in-memory scan with no report file.
+7. Choose **Start** and press Enter.
+8. When the scan finishes, press `c` to copy and save the working endpoints.
 
-1. Download `moz-cloudflare-scanner-windows-amd64-1.0.zip`.
-2. Right-click it and choose **Extract All**.
-3. Open the extracted folder.
-4. Double-click `moz-cloudflare-scanner.exe`.
+If Windows SmartScreen appears, use **More info** → **Run anyway** only when you downloaded the file from a source you trust.
 
-If Windows SmartScreen appears, choose **More info** and then **Run anyway**.
+## What the scanner does
 
-## Linux VPS
+The scanner has two phases:
 
-Upload or download `moz-cloudflare-scanner-linux-amd64-1.0.tar.gz`, then run:
+1. **Phase 1 — Candidate scan:** quickly checks Cloudflare IPs for reachability using your config's host, path, and port.
+2. **Phase 2 — Xray validation:** tests the best candidates through embedded Xray. A saved endpoint must pass **3 out of 3** checks.
 
-```bash
-tar -xzf moz-cloudflare-scanner-linux-amd64-1.0.tar.gz
-chmod +x moz-cloudflare-scanner-linux-amd64
-./moz-cloudflare-scanner-linux-amd64
-```
+Phase 2 is slower by design. Its result is the one that matters.
 
-Run it inside a real SSH terminal. Clipboard copy may not work on some headless VPS systems, but successful endpoints are still saved to `ips.txt`.
+### Profiles
 
-## Scan For Working IPs
+| Profile | Good for | Phase 2 candidates |
+| --- | --- | ---: |
+| Quick | A fast first attempt | 25 |
+| Balanced | Most users | 50 |
+| Deep | A longer, broader scan | 100 |
 
-1. Open **Find Working IPs**.
-2. Keep **Default CF** selected unless you already have your own IP list.
-3. Choose a scan size:
-   - **Fast**: quick first try.
-   - **Balanced**: recommended.
-   - **Deep**: slower, more complete.
-4. Paste one working `vless://` **XHTTP** config.
-5. Start the scan.
-6. Wait for Phase 1 and Phase 2 to finish.
-7. Press `c` to copy and save working endpoints.
+Use **Advanced** to choose a smaller Top N or **All validated** when you want to test every healthy Phase-1 endpoint. “All validated” can take a long time.
 
-The app saves working endpoints to:
+## Your results
 
-```text
-ips.txt
-```
-
-Example:
+Successful endpoints are written to `ips.txt` next to the application:
 
 ```text
 104.17.122.146:443
 104.18.152.95:8443
 ```
 
-## What Configs Are Supported?
-
-Supported:
+The app also creates a live scan report while it runs:
 
 ```text
-vless://...type=xhttp...
-vless://...type=splithttp...
+MozCloudflareScannerResult-YYYYMMDD-HHMMSS.txt
 ```
 
-Not supported:
+You can open this report at any time to see progress and failures.
 
-```text
-trojan://...
-vmess://...
-vless://...type=ws...
-vless://...type=grpc...
-```
+Live reports are optional. Set **Files → Live report: off** before starting a scan if you do not want a report file created. In either mode, `ips.txt` is written only after you press `c` to save the displayed working endpoints.
 
-This is intentional. The scanner is focused on VLESS XHTTP because that is the main target for strict firewall conditions.
+## Generate client links
 
-## Generate Client Configs
+After a scan:
 
-After scanning:
+1. Leave `ips.txt` next to the application.
+2. Choose **VLESS Config Generator** from the main menu.
+3. Paste the same working VLESS XHTTP link.
+4. Enter an optional name prefix, such as `Moz Fast`.
+5. Select **Generate configs.txt**.
 
-1. Keep the saved `ips.txt` next to the app.
-2. Open **Generate V2Ray Configs**.
-3. Paste your original working VLESS XHTTP config.
-4. Choose a name prefix, such as `Moz Fast`.
-5. Generate.
+The generated `configs.txt` contains one VLESS link per endpoint. Import those links into a compatible Xray client such as v2rayN, NekoRay, or Hiddify.
 
-The app writes:
+## Use your own IP list
 
-```text
-configs.txt
-```
+Create an `ips.txt` file next to the executable, then choose **ips.txt** as the source on the scanner screen.
 
-Import those generated links into v2rayN or another compatible client.
-
-## Use Your Own IP List
-
-Create an `ips.txt` file next to the app before scanning.
-
-Supported lines:
+Each line may be an IP, an `IP:port`, or a small IPv4 CIDR:
 
 ```text
 104.17.122.146
@@ -110,51 +85,44 @@ Supported lines:
 45.130.125.0/24
 ```
 
-Large CIDR ranges are rejected to prevent accidental huge scans.
+Large CIDR ranges are rejected to prevent accidental very large scans.
 
-## Result Files
+## Supported configuration
 
-During scans, a live result file is created:
+The scanner intentionally accepts only:
 
 ```text
-MozCloudflareScannerResult-YYYYMMDD-HHMMSS.txt
+vless://...type=xhttp...
 ```
 
-You can open this file while the scan is running.
+It preserves XHTTP settings, ML-KEM 768xplus encryption, XTLS Vision flow, TLS fingerprint, ALPN, and XHTTP extras when it validates or generates links.
 
-## Notes
+It does not accept Trojan, VMess, WebSocket, gRPC, or SplitHTTP links.
 
-- This tool is for testing your own configs and endpoints.
-- Phase 1 finds Cloudflare candidates.
-- Phase 2 validates candidates with xray and is the result that matters.
-- Runtime files such as `ips.txt`, `configs.txt`, scan result files, and `dist` builds should not be committed.
+## Linux VPS
 
-## Build From Source
+Extract the Linux release and run it in an interactive SSH terminal:
 
-Normal users do not need this section.
+```bash
+tar -xzf moz-cloudflare-scanner-linux-amd64-1.1.tar.gz
+chmod +x moz-cloudflare-scanner-linux-amd64
+./moz-cloudflare-scanner-linux-amd64
+```
 
-Windows:
+Clipboard support may be unavailable on a headless VPS, but results are always written to `ips.txt`.
+
+## Build from source
+
+Most users can skip this section.
 
 ```powershell
 .\build.ps1
 ```
 
-Linux:
-
 ```bash
 sh build-linux.sh
 ```
 
-Create release packages:
-
-```powershell
-.\release.ps1
-```
-
-```bash
-sh release-linux.sh
-```
-
 ## License
 
-MIT - see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).

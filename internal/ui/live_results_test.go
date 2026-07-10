@@ -65,18 +65,8 @@ func TestLiveResultWriterRewritesHealthyPhase1Rows(t *testing.T) {
 	}
 }
 
-func TestResolveTopNCustom(t *testing.T) {
+func TestResolveTopN(t *testing.T) {
 	m := NewApp("test")
-	m.configTopNIdx = len(configTopNLabels) - 1
-	m.configTopNCustom = "75"
-	if got := m.resolveTopN(); got != 75 {
-		t.Fatalf("topN = %d, want 75", got)
-	}
-}
-
-func TestResolveTopNPreset(t *testing.T) {
-	m := NewApp("test")
-	m.configTopNIdx = 2
 	if got := m.resolveTopN(); got != 50 {
 		t.Fatalf("topN = %d, want 50", got)
 	}

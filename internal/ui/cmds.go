@@ -332,13 +332,18 @@ func configProbeFromURL(rawURL string, timeout time.Duration) (prober.Config, er
 	}
 
 	probeCfg := prober.Config{
-		Port:               cfg.Port,
-		Mode:               prober.ModeHTTP,
-		Tries:              2,
+		Port: cfg.Port,
+		Mode: prober.ModeHTTP,
+		// Phase 2 performs the authoritative three-pass Xray validation. One
+		// config-aware reachability check here avoids spending a second full
+		// HTTP deadline on candidates that will be validated again anyway.
+		Tries:              1,
 		Timeout:            timeout,
 		SNI:                sni,
 		InsecureSkipVerify: true,
 		AcceptCFHTTPError:  true,
+		XHTTPPath:          cfg.Path,
+		XHTTPHost:          cfg.Host,
 	}
 	return probeCfg, nil
 }
@@ -733,5 +738,3 @@ func startIPInfoLookup(ips []net.IP) tea.Cmd {
 		return IPInfoStartMsg{Total: len(ips)}
 	}
 }
-
-

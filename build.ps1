@@ -3,7 +3,7 @@ $ErrorActionPreference = "Stop"
 $Binary = "moz-cloudflare-scanner"
 $Module = "github.com/moz/moz-cloudflare-scanner"
 $Cmd = "./cmd/moz-cloudflare-scanner"
-$Version = "1.0"
+$Version = "1.1"
 $Commit = "none"
 $BuildDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 

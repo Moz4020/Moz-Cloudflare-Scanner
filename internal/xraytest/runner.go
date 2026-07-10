@@ -22,13 +22,11 @@ import (
 var portCounter atomic.Int32
 
 const (
-	traceProbeURL        = "https://cp.cloudflare.com/cdn-cgi/trace"
-	payloadProbeURL      = "https://speed.cloudflare.com/__down?bytes=262144"
-	validationAttempts   = 1
-	validationMinSuccess = 1
-	payloadBytes         = 256 * 1024
+	traceProbeURL        = "http://1.1.1.1/cdn-cgi/trace"
+	validationAttempts   = 3
+	validationMinSuccess = 3
 	connectivityTimeout  = 5 * time.Second
-	transportTimeout     = 3 * time.Second
+	transportTimeout     = 5 * time.Second
 )
 
 func init() {
@@ -42,17 +40,16 @@ func nextPort() int {
 
 // ValidationResult holds the outcome of testing a VLESS config through xray.
 type ValidationResult struct {
-	IP         string
-	Port       int
-	Success    bool
-	Latency    time.Duration // median successful time to first byte
-	Throughput float64       // bytes/sec for download test
-	BytesRecv  int64
-	Error      string
-	Transport  string // xhttp or splithttp
-	Attempts   int
-	Successes  int
-	Retries    int // compatibility: failed attempts before enough successes
+	IP            string
+	Port          int
+	Success       bool
+	Latency       time.Duration // median successful time to first byte
+	Error         string
+	Transport     string // xhttp
+	Attempts      int
+	Successes     int
+	Retries       int           // compatibility: failed attempts before enough successes
+	Phase1Latency time.Duration // physical RTT from Phase 1
 }
 
 // ValidateConfig validates an XHTTP endpoint with repeated xray-confirmed
@@ -80,15 +77,11 @@ func ValidateConfig(ctx context.Context, cfg *VLESSConfig, timeout time.Duration
 			if once.Latency > 0 {
 				latencies = append(latencies, once.Latency)
 			}
-			res.BytesRecv += once.BytesRecv
-			if once.Throughput > 0 {
-				res.Throughput += once.Throughput
+		} else {
+			if once.Error != "" {
+				lastErr = once.Error
 			}
-		} else if once.Error != "" {
-			lastErr = once.Error
-		}
-		if res.Successes >= validationMinSuccess {
-			break
+			break // Break early because a single failure means we can't reach 3/3 successes!
 		}
 		if attempt < validationAttempts-1 && shouldRetryValidation(ctx, lastErr) {
 			time.Sleep(500 * time.Millisecond)
@@ -99,9 +92,6 @@ func ValidateConfig(ctx context.Context, cfg *VLESSConfig, timeout time.Duration
 	res.Retries = maxInt(res.Attempts-1, 0)
 	res.Success = res.Successes >= validationMinSuccess
 	res.Latency = medianDuration(latencies)
-	if res.Successes > 0 && res.Throughput > 0 {
-		res.Throughput /= float64(res.Successes)
-	}
 	if !res.Success {
 		if lastErr == "" {
 			lastErr = fmt.Sprintf("only %d/%d xhttp checks passed", res.Successes, validationAttempts)
@@ -195,14 +185,6 @@ func validateOnce(ctx context.Context, cfg *VLESSConfig, timeout time.Duration) 
 		return res
 	}
 
-	bytesRecv, throughput, payloadErr := proxyPayloadCheck(testCtx, proxyURL)
-	res.BytesRecv = bytesRecv
-	res.Throughput = throughput
-	if payloadErr != nil {
-		res.Error = fmt.Sprintf("payload: %v", payloadErr)
-		return res
-	}
-
 	res.Success = true
 	res.Successes = 1
 	return res
@@ -256,45 +238,6 @@ func proxyConnectivityCheck(ctx context.Context, proxyAddr string) (bool, time.D
 		latency = time.Since(start)
 	}
 	return true, latency, nil
-}
-
-func proxyPayloadCheck(ctx context.Context, proxyAddr string) (int64, float64, error) {
-	clientTimeout := minDuration(clientTimeoutForContext(ctx, connectivityTimeout), connectivityTimeout)
-	transport := proxyTransport(proxyAddr, minDuration(clientTimeout, transportTimeout))
-	client := &http.Client{
-		Transport: transport,
-		Timeout:   clientTimeout,
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, payloadProbeURL, nil)
-	if err != nil {
-		return 0, 0, err
-	}
-	req.Header.Set("User-Agent", "moz-cloudflare-scanner/1.0")
-
-	start := time.Now()
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, 0, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
-		return 0, 0, fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-
-	n, err := io.Copy(io.Discard, io.LimitReader(resp.Body, payloadBytes))
-	if err != nil {
-		return n, 0, err
-	}
-	if n <= 0 {
-		return 0, 0, fmt.Errorf("no payload bytes received")
-	}
-	elapsed := time.Since(start).Seconds()
-	if elapsed <= 0 {
-		return n, 0, nil
-	}
-	return n, float64(n) / elapsed, nil
 }
 
 func proxyTransport(proxyAddr string, timeout time.Duration) *http.Transport {

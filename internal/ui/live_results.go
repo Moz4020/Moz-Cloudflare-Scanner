@@ -35,6 +35,7 @@ type LiveResultWriter struct {
 	phase1Probed int
 	lastFlush    time.Time
 	pendingFlush int
+	ColoFilter   func(string) bool
 }
 
 func newLiveResultWriter(withConfig bool) (*LiveResultWriter, string, error) {
@@ -95,7 +96,9 @@ func (w *LiveResultWriter) AddPhase1(r *result.Result) {
 	defer w.mu.Unlock()
 	w.phase1Probed++
 	if r.IsHealthy() {
-		w.phase1Rows = append(w.phase1Rows, r)
+		if w.ColoFilter == nil || w.ColoFilter(r.Colo) {
+			w.phase1Rows = append(w.phase1Rows, r)
+		}
 	}
 	_ = w.writeLockedThrottled()
 }

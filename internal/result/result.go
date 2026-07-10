@@ -113,6 +113,10 @@ func (r *Result) IsHealthy() bool {
 		if r.Colo == "" {
 			return false
 		}
+		// Always reject WAF blocks (403) and Cloudflare backend errors (52x)
+		if r.HTTPStatus == 403 || (r.HTTPStatus >= 520 && r.HTTPStatus <= 530) {
+			return false
+		}
 		if (r.HTTPStatus < 200 || r.HTTPStatus >= 400) && !r.AcceptCF {
 			return false
 		}
