@@ -14,28 +14,47 @@ import (
 )
 
 var liveResultWriter *LiveResultWriter
+var liveResultWriterMu sync.RWMutex
 
-func setLiveResultWriter(w *LiveResultWriter) { liveResultWriter = w }
+func setLiveResultWriter(w *LiveResultWriter) {
+	liveResultWriterMu.Lock()
+	liveResultWriter = w
+	liveResultWriterMu.Unlock()
+}
 
-func clearLiveResultWriter() { liveResultWriter = nil }
+func clearLiveResultWriter() {
+	liveResultWriterMu.Lock()
+	liveResultWriter = nil
+	liveResultWriterMu.Unlock()
+}
 
-// LiveResultWriter appends scan results to a text file the user can open while
-// the scan runs. The file is rewritten on each update so external viewers refresh.
+func currentLiveResultWriter() *LiveResultWriter {
+	liveResultWriterMu.RLock()
+	w := liveResultWriter
+	liveResultWriterMu.RUnlock()
+	return w
+}
+
+// LiveResultWriter writes scan results to a text file the user can open while
+// the scan runs. Updates are appended during the scan; a complete snapshot is
+// written at phase transitions and completion.
 type LiveResultWriter struct {
 	mu sync.Mutex
 
-	path         string
-	started      time.Time
-	withConfig   bool
-	phase        int
-	phase1Only   bool
-	phase1Done   bool
-	phase1Rows   []*result.Result
-	phase2Rows   []*xraytest.ValidationResult
-	phase1Probed int
-	lastFlush    time.Time
-	pendingFlush int
-	ColoFilter   func(string) bool
+	path          string
+	started       time.Time
+	withConfig    bool
+	phase         int
+	phase1Only    bool
+	phase1Done    bool
+	phase1Rows    []*result.Result
+	phase2Rows    []*xraytest.ValidationResult
+	phase1Probed  int
+	lastFlush     time.Time
+	pendingFlush  int
+	phase1Written int
+	phase2Written int
+	ColoFilter    func(string) bool
 }
 
 func newLiveResultWriter(withConfig bool) (*LiveResultWriter, string, error) {
@@ -147,7 +166,64 @@ func (w *LiveResultWriter) writeLockedThrottled() error {
 	if time.Since(w.lastFlush) < 1000*time.Millisecond {
 		return nil
 	}
-	return w.writeLockedNow()
+	return w.appendLockedUpdate()
+}
+
+// appendLockedUpdate keeps the live file useful without rebuilding the entire
+// report on every refresh. A final full snapshot is still written at phase
+// transitions and scan completion.
+func (w *LiveResultWriter) appendLockedUpdate() error {
+	w.pendingFlush = 0
+	w.lastFlush = time.Now()
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("\n--- Update %s ---\n", w.lastFlush.Format("2006-01-02 15:04:05")))
+	sb.WriteString(fmt.Sprintf("Phase 1: %d candidates / %d probed\n", len(w.phase1Rows), w.phase1Probed))
+	if w.phase >= 2 && !w.phase1Only {
+		success, failed, skipped := validationOutcomeCounts(w.phase2Rows)
+		sb.WriteString(fmt.Sprintf("Phase 2: %d tested, %d working, %d failed, %d skipped\n", len(w.phase2Rows), success, failed, skipped))
+	}
+
+	for _, r := range w.phase1Rows[w.phase1Written:] {
+		status := "healthy"
+		if w.withConfig {
+			status = "candidate"
+		}
+		sb.WriteString(endpointCandidateRow(r, status) + "\n")
+	}
+	for _, r := range w.phase2Rows[w.phase2Written:] {
+		status := "failed"
+		if r.Success {
+			status = "working"
+		} else if isSkippedValidation(r) {
+			status = "skipped"
+		} else if r.Error != "" {
+			status = r.Error
+			if len(status) > statusColWidth {
+				status = status[:statusColWidth-1] + "..."
+			}
+		}
+		sb.WriteString(validationRow(r, status) + "\n")
+	}
+
+	if sb.Len() == 0 {
+		return nil
+	}
+	f, err := os.OpenFile(w.path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644)
+	if err != nil {
+		return err
+	}
+	_, writeErr := f.WriteString(sb.String())
+	closeErr := f.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	w.phase1Written = len(w.phase1Rows)
+	w.phase2Written = len(w.phase2Rows)
+	return nil
 }
 
 func (w *LiveResultWriter) writeLockedNow() error {
@@ -236,5 +312,10 @@ func (w *LiveResultWriter) writeLockedNow() error {
 		}
 	}
 
-	return os.WriteFile(w.path, []byte(sb.String()), 0644)
+	err := os.WriteFile(w.path, []byte(sb.String()), 0644)
+	if err == nil {
+		w.phase1Written = len(w.phase1Rows)
+		w.phase2Written = len(w.phase2Rows)
+	}
+	return err
 }

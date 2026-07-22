@@ -64,6 +64,9 @@ func TestResolvePhase1OptionsUsesRandomCloudflareDefaults(t *testing.T) {
 	if opts.timeout.String() != "3s" {
 		t.Fatalf("timeout = %s, want 3s", opts.timeout)
 	}
+	if opts.tries != 2 {
+		t.Fatalf("tries = %d, want 2", opts.tries)
+	}
 	if opts.rawURL != m.configURL {
 		t.Fatal("rawURL was not preserved")
 	}
@@ -732,22 +735,66 @@ func TestConfigurationProfiles(t *testing.T) {
 	// Test Quick (0) values
 	m.configProfileIdx = 0
 	opts := m.resolvePhase1Options()
-	if opts.count != 5000 || opts.concurrency != 200 || opts.timeout.String() != "2s" {
+	if opts.count != 5000 || opts.concurrency != 200 || opts.timeout.String() != "2s" || opts.tries != 1 {
 		t.Errorf("Quick profile resolved wrong values: %+v", opts)
 	}
 
 	// Test Balanced (1) values
 	m.configProfileIdx = 1
 	opts = m.resolvePhase1Options()
-	if opts.count != 10000 || opts.concurrency != 200 || opts.timeout.String() != "3s" {
+	if opts.count != 10000 || opts.concurrency != 200 || opts.timeout.String() != "3s" || opts.tries != 2 {
 		t.Errorf("Balanced profile resolved wrong values: %+v", opts)
 	}
 
 	// Test Deep (2) values
 	m.configProfileIdx = 2
 	opts = m.resolvePhase1Options()
-	if opts.count != 20000 || opts.concurrency != 200 || opts.timeout.String() != "5s" {
+	if opts.count != 20000 || opts.concurrency != 200 || opts.timeout.String() != "5s" || opts.tries != 3 {
 		t.Errorf("Deep profile resolved wrong values: %+v", opts)
+	}
+}
+
+func TestUploadQualityToggleIsOptIn(t *testing.T) {
+	m := NewApp("test")
+	m.page = PageScanWithConfig
+	m.configSetupRow = 6
+
+	next, _ := m.handleScanWithConfigKey(tea.KeyMsg{Type: tea.KeyRight})
+	got := next.(AppModel)
+	if got.configUploadBytes != xraytest.UploadProbeBytes {
+		t.Fatalf("upload bytes = %d, want %d", got.configUploadBytes, xraytest.UploadProbeBytes)
+	}
+
+	next, _ = got.handleScanWithConfigKey(tea.KeyMsg{Type: tea.KeyRight})
+	got = next.(AppModel)
+	if got.configUploadBytes != xraytest.UploadProbeBytes128 {
+		t.Fatalf("upload bytes = %d, want %d", got.configUploadBytes, xraytest.UploadProbeBytes128)
+	}
+
+	next, _ = got.handleScanWithConfigKey(tea.KeyMsg{Type: tea.KeyRight})
+	if next.(AppModel).configUploadBytes != 0 {
+		t.Fatal("upload test should cycle off")
+	}
+}
+
+func TestWorkingEndpointsPreferMeasuredUpload(t *testing.T) {
+	results := []*xraytest.ValidationResult{
+		{IP: "104.17.0.2", Port: 443, Success: true, Successes: 3, Latency: 100 * time.Millisecond, UploadTested: true, UploadKbps: 200},
+		{IP: "104.17.0.1", Port: 443, Success: true, Successes: 3, Latency: 100 * time.Millisecond, UploadTested: true, UploadKbps: 900},
+	}
+
+	got := workingEndpoints(results)
+	if len(got) != 2 || got[0] != "104.17.0.1:443" {
+		t.Fatalf("working endpoints = %v, want faster upload first", got)
+	}
+}
+
+func TestCenterCellCentersLatencyValue(t *testing.T) {
+	if got, want := centerCell(metricColWidth, "118ms"), "  118ms  "; got != want {
+		t.Fatalf("centered latency = %q, want %q", got, want)
+	}
+	if got, want := centerCell(8, "3/3"), "  3/3   "; got != want {
+		t.Fatalf("centered checks = %q, want %q", got, want)
 	}
 }
 

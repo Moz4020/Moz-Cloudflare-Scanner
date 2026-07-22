@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.2 — 2026-07-22
+
+### Iranian route quality and presentation
+
+- Added an opt-in Phase 2 upload-quality probe for comparing endpoints with poor upstream performance.
+- Added selectable 64 KiB / 128 KiB samples with 4 MiB / 8 MiB scan-wide caps; upload measurement never affects strict Xray pass/fail results.
+- Centered Phase 1 and Phase 2 table headers and values inside their fixed-width columns for easier comparison.
+- Updated Windows/Linux build and archive metadata to version 1.2.
+
 ## v1.1 — 2026-07-11
 
 ### Faster, stricter scanning

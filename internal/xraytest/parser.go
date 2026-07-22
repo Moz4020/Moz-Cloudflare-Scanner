@@ -3,6 +3,7 @@ package xraytest
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/url"
 	"strconv"
 	"strings"
@@ -191,7 +192,8 @@ func (c *VLESSConfig) ToShareURL() string {
 	}
 
 	remark := url.PathEscape(c.Remark)
-	return fmt.Sprintf("vless://%s@%s:%d?%s#%s", c.UUID, c.Address, c.Port, params.Encode(), remark)
+	address := net.JoinHostPort(c.Address, strconv.Itoa(c.Port))
+	return fmt.Sprintf("vless://%s@%s?%s#%s", c.UUID, address, params.Encode(), remark)
 }
 
 func splitHostPort(hostPort string) (string, string, error) {

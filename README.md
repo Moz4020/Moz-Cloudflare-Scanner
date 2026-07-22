@@ -17,9 +17,10 @@ No Go installation or coding knowledge is needed when using a release build.
 3. On the main menu, choose **Find Cloudflare IPs**.
 4. Keep **Default CF** and **Balanced** selected for your first scan.
 5. Paste your working VLESS XHTTP link on the **Config** row.
-6. On **Files**, choose whether to create a live scan report. Turn it off for an in-memory scan with no report file.
-7. Choose **Start** and press Enter.
-8. When the scan finishes, press `c` to copy and save the working endpoints.
+6. Leave **Upload → Upload test: off** unless you want to compare upload quality. You can choose a 64 KiB sample with a 4 MiB cap or a 128 KiB sample with an 8 MiB cap for the entire scan.
+7. On **Files**, choose whether to create a live scan report. Turn it off for an in-memory scan with no report file.
+8. Choose **Start** and press Enter.
+9. When the scan finishes, press `c` to copy and save the working endpoints.
 
 If Windows SmartScreen appears, use **More info** → **Run anyway** only when you downloaded the file from a source you trust.
 
@@ -28,19 +29,26 @@ If Windows SmartScreen appears, use **More info** → **Run anyway** only when y
 The scanner has two phases:
 
 1. **Phase 1 — Candidate scan:** quickly checks Cloudflare IPs for reachability using your config's host, path, and port.
-2. **Phase 2 — Xray validation:** tests the best candidates through embedded Xray. A saved endpoint must pass **3 out of 3** checks.
+2. **Phase 2 — Xray validation:** tests the best candidates through embedded Xray. A saved endpoint must pass **3 out of 3** checks. The optional upload probe measures route quality through the same Xray session; it never changes whether an endpoint passes validation.
 
 Phase 2 is slower by design. Its result is the one that matters.
 
 ### Profiles
 
-| Profile | Good for | Phase 2 candidates |
-| --- | --- | ---: |
-| Quick | A fast first attempt | 25 |
-| Balanced | Most users | 50 |
-| Deep | A longer, broader scan | 100 |
+| Profile | Good for | Phase 1 IPs | Phase 1 tries | Phase 2 candidates |
+| --- | --- | ---: | ---: | ---: |
+| Quick | A fast first attempt | 5,000 | 1 | 25 |
+| Balanced | Most users | 10,000 | 2 | 50 |
+| Deep | A longer, broader scan | 20,000 | 3 | 100 |
+
+When a VLESS config is supplied, Phase 1 uses one config-aware reachability
+check per endpoint; Phase 2 remains the authoritative 3-of-3 Xray validation.
 
 Use **Advanced** to choose a smaller Top N or **All validated** when you want to test every healthy Phase-1 endpoint. “All validated” can take a long time.
+
+### Optional upload quality
+
+**Upload → Upload test: 64 KB** or **Upload test: 128 KB** sends one small random payload to Cloudflare's edge only after the endpoint passes all three Phase-2 checks. The sample is shown in the Phase-2 **UPLOAD** column, and working endpoints are ordered by measured upload speed when available. The 64 KiB mode reserves at most 4 MiB per scan; the 128 KiB mode reserves at most 8 MiB. Candidates beyond the selected budget are still valid, but show no upload measurement.
 
 ## Your results
 
@@ -104,7 +112,7 @@ It does not accept Trojan, VMess, WebSocket, gRPC, or SplitHTTP links.
 Extract the Linux release and run it in an interactive SSH terminal:
 
 ```bash
-tar -xzf moz-cloudflare-scanner-linux-amd64-1.1.tar.gz
+tar -xzf moz-cloudflare-scanner-linux-amd64-1.2.tar.gz
 chmod +x moz-cloudflare-scanner-linux-amd64
 ./moz-cloudflare-scanner-linux-amd64
 ```

@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +23,55 @@ var sniHostnames = []string{
 	"cloudflare.com",
 	"1.1.1.1.cdn.cloudflare.net",
 	"blog.cloudflare.com",
+}
+
+const defaultProbeTimeout = 5 * time.Second
+
+type probeDialTargetKey struct{}
+
+type probeDialTarget struct {
+	addr    string
+	timeout time.Duration
+}
+
+// The transport is shared because every probe disables keep-alives and carries
+// its candidate address in the request context. This avoids allocating a new
+// Transport, TLS config, and HTTP client for every candidate while retaining
+// per-candidate IP pinning.
+var (
+	secureHTTPClient   = newProbeHTTPClient(false)
+	insecureHTTPClient = newProbeHTTPClient(true)
+)
+
+func newProbeHTTPClient(insecure bool) *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			DialContext:         dialProbeTarget,
+			TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: insecure}, // #nosec G402 -- Phase 1 intentionally supports IP candidates without matching certificates.
+			DisableKeepAlives:   true,
+			ForceAttemptHTTP2:   true,
+			TLSHandshakeTimeout: defaultProbeTimeout,
+		},
+	}
+}
+
+func dialProbeTarget(ctx context.Context, network, _ string) (net.Conn, error) {
+	target, ok := ctx.Value(probeDialTargetKey{}).(probeDialTarget)
+	if !ok || target.addr == "" {
+		return nil, fmt.Errorf("probe dial target missing")
+	}
+
+	dialCtx := ctx
+	var cancel context.CancelFunc
+	if target.timeout > 0 {
+		dialCtx, cancel = context.WithTimeout(ctx, target.timeout)
+		defer cancel()
+	}
+	conn, err := (&net.Dialer{}).DialContext(dialCtx, network, target.addr)
+	if err == nil {
+		setLingerZero(conn)
+	}
+	return conn, err
 }
 
 // Config holds parameters for a single probe session.
@@ -80,6 +130,12 @@ func ParseMode(s string) (Mode, error) {
 
 // Probe runs a full measurement session against ip and returns a Result.
 func Probe(ctx context.Context, ip net.IP, cfg Config) *result.Result {
+	if cfg.Tries <= 0 {
+		cfg.Tries = 1
+	}
+	if cfg.Timeout <= 0 {
+		cfg.Timeout = defaultProbeTimeout
+	}
 	r := &result.Result{
 		IP:        ip,
 		Port:      cfg.Port,
@@ -91,9 +147,11 @@ func Probe(ctx context.Context, ip net.IP, cfg Config) *result.Result {
 	if cfg.Mode == ModeHTTP && cfg.SpeedBytes > 0 {
 		r.SpeedTested = true
 	}
+	failures := 0
 
 	for i := 0; i < cfg.Tries; i++ {
 		if ctx.Err() != nil {
+			r.Latencies = r.Latencies[:i]
 			break
 		}
 		sni := cfg.SNI
@@ -135,13 +193,30 @@ func Probe(ctx context.Context, ip net.IP, cfg Config) *result.Result {
 		if throughput > 0 {
 			r.Throughput = throughput
 		}
+		if lat == 0 {
+			failures++
+			// Loss must be below 50%, so once half the attempts have
+			// failed, this candidate cannot become healthy anymore.
+			if failures*2 >= cfg.Tries {
+				r.Latencies = r.Latencies[:i+1]
+				break
+			}
+		}
 
-		// Small jitter between tries to avoid looking like a scanner
+		// Small jitter between tries avoids a burst of identical requests.
 		if i < cfg.Tries-1 {
 			jitter := time.Duration(rand.Intn(50)+10) * time.Millisecond
+			timer := time.NewTimer(jitter)
 			select {
 			case <-ctx.Done():
-			case <-time.After(jitter):
+				r.Latencies = r.Latencies[:i+1]
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+			case <-timer.C:
 			}
 		}
 	}
@@ -151,7 +226,7 @@ func Probe(ctx context.Context, ip net.IP, cfg Config) *result.Result {
 
 // probeTCP measures a raw TCP connect time.
 func probeTCP(ctx context.Context, ip net.IP, port int, timeout time.Duration) time.Duration {
-	addr := fmt.Sprintf("%s:%d", ip.String(), port)
+	addr := net.JoinHostPort(ip.String(), strconv.Itoa(port))
 	dl := time.Now().Add(timeout)
 	dialCtx, cancel := context.WithDeadline(ctx, dl)
 	defer cancel()
@@ -170,7 +245,7 @@ func probeTCP(ctx context.Context, ip net.IP, port int, timeout time.Duration) t
 
 // probeTLS measures a TLS handshake time.
 func probeTLS(ctx context.Context, ip net.IP, port int, sni string, timeout time.Duration, insecure bool) (time.Duration, bool) {
-	addr := fmt.Sprintf("%s:%d", ip.String(), port)
+	addr := net.JoinHostPort(ip.String(), strconv.Itoa(port))
 	dl := time.Now().Add(timeout)
 	dialCtx, cancel := context.WithDeadline(ctx, dl)
 	defer cancel()
@@ -200,34 +275,11 @@ func probeTLS(ctx context.Context, ip net.IP, port int, sni string, timeout time
 func probeHTTP(ctx context.Context, ip net.IP, port int, sni string, timeout time.Duration, speedBytes int64, insecure bool, xhttpPath string, xhttpHost string) (
 	lat time.Duration, tlsOk bool, httpStatus int, colo string, throughput float64,
 ) {
-	addr := fmt.Sprintf("%s:%d", ip.String(), port)
-
-	// Budget split: TCP gets ¼, TLS gets ½, leaving ¼ guaranteed for the HTTP
-	// GET+response. Without this, on DPI-throttled networks the TLS handshake
-	// can silently consume the entire http.Client.Timeout, making the HTTP
-	// phase impossible and producing false-positive packet loss.
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			conn, err := (&net.Dialer{Timeout: timeout / 4}).DialContext(ctx, network, addr)
-			if err == nil {
-				setLingerZero(conn)
-			}
-			return conn, err
-		},
-		TLSClientConfig: &tls.Config{
-			ServerName:         sni,
-			MinVersion:         tls.VersionTLS12,
-			InsecureSkipVerify: insecure,
-		},
-		DisableKeepAlives:   true,
-		ForceAttemptHTTP2:   true,
-		TLSHandshakeTimeout: timeout / 2,
-	}
-
-	client := &http.Client{
-		Timeout:   timeout,
-		Transport: transport,
-	}
+	addr := net.JoinHostPort(ip.String(), strconv.Itoa(port))
+	timeout = normalizeTimeout(timeout)
+	httpCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	requestCtx := context.WithValue(httpCtx, probeDialTargetKey{}, probeDialTarget{addr: addr, timeout: timeout / 4})
 
 	scheme := "https"
 	if port == 80 {
@@ -238,7 +290,7 @@ func probeHTTP(ctx context.Context, ip net.IP, port int, sni string, timeout tim
 		url = fmt.Sprintf("%s://%s%s", scheme, sni, xhttpPath)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, url, nil)
 	if err != nil {
 		return
 	}
@@ -248,6 +300,10 @@ func probeHTTP(ctx context.Context, ip net.IP, port int, sni string, timeout tim
 	req.Header.Set("User-Agent", "moz-cloudflare-scanner/1.0")
 
 	start := time.Now()
+	client := secureHTTPClient
+	if insecure {
+		client = insecureHTTPClient
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, false, 0, "", 0
@@ -279,38 +335,25 @@ func probeDownload(ctx context.Context, ip net.IP, port int, timeout time.Durati
 		return 0
 	}
 
-	addr := fmt.Sprintf("%s:%d", ip.String(), port)
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			conn, err := (&net.Dialer{Timeout: timeout / 4}).DialContext(ctx, network, addr)
-			if err == nil {
-				setLingerZero(conn)
-			}
-			return conn, err
-		},
-		TLSClientConfig: &tls.Config{
-			ServerName: "speed.cloudflare.com",
-			MinVersion: tls.VersionTLS12,
-		},
-		DisableKeepAlives:   true,
-		ForceAttemptHTTP2:   true,
-		TLSHandshakeTimeout: timeout / 2,
-	}
-	client := &http.Client{Timeout: timeout, Transport: transport}
+	addr := net.JoinHostPort(ip.String(), strconv.Itoa(port))
+	timeout = normalizeTimeout(timeout)
+	httpCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	requestCtx := context.WithValue(httpCtx, probeDialTargetKey{}, probeDialTarget{addr: addr, timeout: timeout / 4})
 
 	scheme := "https"
 	if port == 80 {
 		scheme = "http"
 	}
 	url := fmt.Sprintf("%s://speed.cloudflare.com/__down?bytes=%d", scheme, bytes)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, url, nil)
 	if err != nil {
 		return 0
 	}
 	req.Header.Set("User-Agent", "moz-cloudflare-scanner/1.0")
 
 	start := time.Now()
-	resp, err := client.Do(req)
+	resp, err := secureHTTPClient.Do(req)
 	if err != nil {
 		return 0
 	}
@@ -328,6 +371,13 @@ func probeDownload(ctx context.Context, ip net.IP, port int, timeout time.Durati
 		return 0
 	}
 	return float64(n) / elapsed
+}
+
+func normalizeTimeout(timeout time.Duration) time.Duration {
+	if timeout <= 0 {
+		return defaultProbeTimeout
+	}
+	return timeout
 }
 
 // parseColoCDN extracts the "colo" field from /cdn-cgi/trace responses.

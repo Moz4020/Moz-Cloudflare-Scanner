@@ -3,7 +3,7 @@ $ErrorActionPreference = "Stop"
 $Binary = "moz-cloudflare-scanner"
 $Module = "github.com/moz/moz-cloudflare-scanner"
 $Cmd = "./cmd/moz-cloudflare-scanner"
-$Version = "1.1"
+$Version = "1.2"
 $Commit = "none"
 $BuildDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
@@ -25,5 +25,8 @@ $ldflags = @(
 ) -join " "
 
 go build -trimpath -ldflags $ldflags -o "dist/$Binary.exe" $Cmd
+if ($LASTEXITCODE -ne 0) {
+    throw "go build failed with exit code $LASTEXITCODE"
+}
 
 Write-Host "Built dist/$Binary.exe"

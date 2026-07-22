@@ -11,11 +11,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/moz/moz-cloudflare-scanner/internal/engine"
 	"github.com/moz/moz-cloudflare-scanner/internal/ipsrc"
 	"github.com/moz/moz-cloudflare-scanner/internal/prober"
 	"github.com/moz/moz-cloudflare-scanner/internal/result"
@@ -25,6 +25,22 @@ import (
 // scanCancel holds the cancel function for the active scan so the TUI can
 // abort it when the user presses esc/q.
 var scanCancel context.CancelFunc
+var scanCancelMu sync.Mutex
+
+func setScanCancel(cancel context.CancelFunc) {
+	scanCancelMu.Lock()
+	scanCancel = cancel
+	scanCancelMu.Unlock()
+}
+
+func cancelActiveScan() {
+	scanCancelMu.Lock()
+	cancel := scanCancel
+	scanCancelMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
 
 // prog is set by main before launching the Bubble Tea program so the
 // background goroutines can send messages back.
@@ -56,12 +72,12 @@ func runConfigPhase1(opts configPhase1Options) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	scanCancel = cancel
+	setScanCancel(cancel)
 	defer cancel()
 
 	callback := func(r *result.Result) {
-		if liveResultWriter != nil {
-			liveResultWriter.AddPhase1(r)
+		if writer := currentLiveResultWriter(); writer != nil {
+			writer.AddPhase1(r)
 		}
 		if prog != nil {
 			prog.Send(ConfigPhase1ResultMsg{Result: r})
@@ -107,6 +123,17 @@ func runConfigPhase1(opts configPhase1Options) {
 	// We collect healthy results from the primary scan to use for neighbor expansion later
 	var healthyResults []*result.Result
 	var healthyMu sync.Mutex
+	deduper := newEndpointDeduper()
+	probeTries := opts.tries
+	if probeTries <= 0 {
+		probeTries = 1
+	}
+	if strings.TrimSpace(opts.rawURL) != "" {
+		// Config-aware Phase 1 is intentionally a single reachability check;
+		// Xray Phase 2 performs the repeated authoritative validation.
+		probeTries = 1
+	}
+	probeCfg.Tries = probeTries
 
 	primaryCallback := func(r *result.Result) {
 		callback(r)
@@ -118,7 +145,7 @@ func runConfigPhase1(opts configPhase1Options) {
 	}
 
 	// Stage 1A: Primary Scan
-	runConfigPortProbes(ctx, ipStream, ports, opts.concurrency, probeCfg, primaryCallback)
+	runConfigPortProbes(ctx, ipStream, ports, opts.concurrency, probeCfg, deduper, primaryCallback)
 
 	// Stage 1B: Balanced Neighbor Scan (only if primary scan wasn't cancelled)
 	if neighborEnabled && len(healthyResults) > 0 && ctx.Err() == nil {
@@ -139,12 +166,12 @@ func runConfigPhase1(opts configPhase1Options) {
 			close(neighborStream)
 
 			// Probes on neighbors (which don't recursively expand neighbors since neighborEnabled is false here)
-			runConfigPortProbes(ctx, neighborStream, ports, opts.concurrency, probeCfg, callback)
+			runConfigPortProbes(ctx, neighborStream, ports, opts.concurrency, probeCfg, deduper, callback)
 		}
 	}
 
-	if liveResultWriter != nil {
-		_ = liveResultWriter.flush()
+	if writer := currentLiveResultWriter(); writer != nil {
+		_ = writer.flush()
 	}
 
 	if prog != nil {
@@ -167,9 +194,27 @@ func streamStaticIPs(ctx context.Context, ips []net.IP) <-chan net.IP {
 	return ch
 }
 
-type configProbeJob struct {
-	ip   net.IP
-	port int
+type endpointDeduper struct {
+	mu   sync.Mutex
+	seen map[string]struct{}
+}
+
+func newEndpointDeduper() *endpointDeduper {
+	return &endpointDeduper{seen: make(map[string]struct{})}
+}
+
+func (d *endpointDeduper) add(ip net.IP, port int) bool {
+	if d == nil {
+		return true
+	}
+	key := net.JoinHostPort(ip.String(), strconv.Itoa(port))
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, exists := d.seen[key]; exists {
+		return false
+	}
+	d.seen[key] = struct{}{}
+	return true
 }
 
 // gatherNeighbors gathers up to maxTotal unique neighbor IPs from healthy results,
@@ -224,93 +269,45 @@ func gatherNeighbors(healthy []*result.Result, nets []*net.IPNet, radius, perHit
 	return neighbors
 }
 
-func runConfigPortProbes(ctx context.Context, ips <-chan net.IP, ports []int, concurrency int, base prober.Config, callback func(*result.Result)) {
+func runConfigPortProbes(ctx context.Context, ips <-chan net.IP, ports []int, concurrency int, base prober.Config, deduper *endpointDeduper, callback func(*result.Result)) {
 	if concurrency <= 0 {
 		concurrency = 50
 	}
 
-	jobs := make(chan configProbeJob, maxInt(concurrency*4, len(ports)*concurrency*2))
-	var pending int64
-	seen := make(map[string]struct{})
-	var seenMu sync.Mutex
-
-	jobKey := func(ip net.IP, port int) string {
-		return fmt.Sprintf("%s:%d", ip.String(), port)
-	}
-
-	submit := func(ip net.IP, port int) bool {
-		key := jobKey(ip, port)
-		seenMu.Lock()
-		if _, ok := seen[key]; ok {
-			seenMu.Unlock()
-			return false
-		}
-		seen[key] = struct{}{}
-		seenMu.Unlock()
-
-		atomic.AddInt64(&pending, 1)
-		job := configProbeJob{ip: ip, port: port}
-		select {
-		case <-ctx.Done():
-			atomic.AddInt64(&pending, -1)
-			return false
-		case jobs <- job:
-			return true
-		}
-	}
-
-	enqueueIP := func(ip net.IP) {
-		for _, port := range ports {
-			submit(ip, port)
-		}
-	}
-
-	var wg sync.WaitGroup
-	for i := 0; i < concurrency; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for job := range jobs {
-				if ctx.Err() != nil {
-					atomic.AddInt64(&pending, -1)
-					continue
-				}
-				r := prober.Probe(ctx, job.ip, base.WithPort(job.port))
-				callback(r)
-				atomic.AddInt64(&pending, -1)
-			}
-		}()
-	}
+	jobs := make(chan engine.Job, maxInt(concurrency*4, len(ports)*concurrency*2))
 
 	go func() {
-		defer func() {
-			for atomic.LoadInt64(&pending) > 0 {
-				select {
-				case <-ctx.Done():
-					close(jobs)
-					return
-				case <-time.After(20 * time.Millisecond):
-				}
-			}
-			close(jobs)
-		}()
+		defer close(jobs)
 
 		for ip := range ips {
 			if ctx.Err() != nil {
 				return
 			}
-			enqueueIP(ip)
+			for _, port := range ports {
+				if !deduper.add(ip, port) {
+					continue
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case jobs <- engine.Job{IP: ip, Port: port}:
+				}
+			}
 		}
 	}()
 
-	wg.Wait()
+	workerEngine := engine.New(engine.Config{
+		Concurrency: concurrency,
+		ProbeConfig: base,
+	})
+	workerEngine.RunJobs(ctx, jobs, callback)
 }
 
 func defaultPhase1ProbeConfig(timeout time.Duration) prober.Config {
 	return prober.Config{
 		Port:       443,
 		Mode:       prober.ModeHTTP,
-		Tries:      3,
+		Tries:      1,
 		Timeout:    timeout,
 		SNI:        "speed.cloudflare.com",
 		SpeedBytes: 0,
@@ -515,7 +512,7 @@ func loadEndpoints(path string, defaultPort int) ([]configEndpoint, error) {
 		if !ok {
 			continue
 		}
-		key := fmt.Sprintf("%s:%d", endpoint.IP.String(), endpoint.Port)
+		key := net.JoinHostPort(endpoint.IP.String(), strconv.Itoa(endpoint.Port))
 		if _, exists := seen[key]; exists {
 			continue
 		}
@@ -597,7 +594,9 @@ func runStabilityTest(tries int, interval time.Duration, workers int, defaultPor
 		}
 
 		var ctx context.Context
-		ctx, scanCancel = context.WithCancel(context.Background())
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(context.Background())
+		setScanCancel(cancel)
 
 		go func() {
 			numWorkers := workers
@@ -645,7 +644,9 @@ func runStabilityTest(tries int, interval time.Duration, workers int, defaultPor
 									break
 								}
 								start := time.Now()
-								conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ep.IP.String(), ep.Port), timeout)
+								dialCtx, dialCancel := context.WithTimeout(ctx, timeout)
+								conn, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", net.JoinHostPort(ep.IP.String(), strconv.Itoa(ep.Port)))
+								dialCancel()
 								duration := time.Since(start)
 
 								if err == nil {
@@ -656,10 +657,17 @@ func runStabilityTest(tries int, interval time.Duration, workers int, defaultPor
 								}
 
 								if j < tries-1 {
+									timer := time.NewTimer(interval)
 									select {
 									case <-ctx.Done():
+										if !timer.Stop() {
+											select {
+											case <-timer.C:
+											default:
+											}
+										}
 										return
-									case <-time.After(interval):
+									case <-timer.C:
 									}
 								}
 							}
@@ -695,7 +703,7 @@ func startIPInfoLookup(ips []net.IP) tea.Cmd {
 	return func() tea.Msg {
 		go func() {
 			ctx, cancel := context.WithCancel(context.Background())
-			scanCancel = cancel
+			setScanCancel(cancel)
 			defer cancel()
 
 			baseCfg := prober.Config{

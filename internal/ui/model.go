@@ -83,8 +83,7 @@ var (
 	styleColLatencyMid  = lipgloss.NewStyle().Foreground(lipgloss.Color("#F39C12"))
 	styleColLatencySlow = lipgloss.NewStyle().Foreground(lipgloss.Color("#E74C3C"))
 
-	styleColColo    = lipgloss.NewStyle().Foreground(lipgloss.Color("#9D4EDD")).Bold(true)
-	styleColBracket = lipgloss.NewStyle().Foreground(lipgloss.Color("#444466"))
+	styleColColo = lipgloss.NewStyle().Foreground(lipgloss.Color("#9D4EDD")).Bold(true)
 )
 
 type quickPreset struct {
@@ -146,10 +145,11 @@ type AppModel struct {
 	configPortsInput  textinput.Model
 	configColoIdx     int // 0 = All, 1 = FRA, 2 = Custom
 	configColoInput   textinput.Model
-	configSetupRow    int // 0=Source, 1=Profile, 2=Ports, 3=Colo, 4=Config, 5=Advanced, 6=Files, 7=Start
+	configSetupRow    int // 0=Source, 1=Profile, 2=Ports, 3=Colo, 4=Config, 5=Advanced, 6=Upload, 7=Files, 8=Start
 	configURL         string
 	configAdvanced    bool
-	configSaveResults bool // create live result reports; ips.txt is always saved only on explicit copy
+	configUploadBytes int64 // 0=off, 64 KiB or 128 KiB during Phase 2
+	configSaveResults bool  // create live result reports; ips.txt is always saved only on explicit copy
 	// -1 uses the profile cap; 0 means all Phase-1 healthy endpoints.
 	configTopNOverride int
 	// custom configuration values are no longer used since profile/ports are unified
@@ -372,8 +372,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if strings.TrimSpace(m.configURL) == "" {
 			m.configPhase1Only = true
 			m.scanDuration = time.Since(m.scanStarted)
-			if liveResultWriter != nil {
-				liveResultWriter.FinishPhase1Only()
+			if writer := currentLiveResultWriter(); writer != nil {
+				writer.FinishPhase1Only()
 			}
 			return m, nil
 		}
@@ -396,8 +396,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		// Start Phase 2 with candidates spread across latency and IP ranges.
-		if liveResultWriter != nil {
-			liveResultWriter.BeginPhase2()
+		if writer := currentLiveResultWriter(); writer != nil {
+			writer.BeginPhase2()
 		}
 		m.page = PageConfigPhase2
 		m.scanStarted = time.Now()
@@ -507,6 +507,7 @@ func (m AppModel) selectMenuItem() (tea.Model, tea.Cmd) {
 		m.configColoInput.Blur()
 		m.configCustomMode = false
 		m.configAdvanced = false
+		m.configUploadBytes = 0
 		m.configTopNOverride = -1
 		m.configSaveResults = true
 		m.configCustomInput.SetValue("")
@@ -603,23 +604,40 @@ func formatEndpoint(ip string, port int) string {
 	if port <= 0 {
 		return ip
 	}
-	return fmt.Sprintf("%s:%d", ip, port)
+	return net.JoinHostPort(ip, strconv.Itoa(port))
 }
 
 const (
 	endpointColWidth  = 24
 	transportColWidth = 7
+	lossColWidth      = 7
 	metricColWidth    = 9
+	coloColWidth      = 6
+	uploadColWidth    = 10
 	statusColWidth    = 14
 )
 
+func centerCell(width int, text string) string {
+	if width <= 0 {
+		return text
+	}
+	if lipgloss.Width(text) > width {
+		text = truncateMiddle(text, width)
+	}
+	textWidth := lipgloss.Width(text)
+	remaining := width - textWidth
+	left := remaining / 2
+	right := remaining - left
+	return strings.Repeat(" ", left) + text + strings.Repeat(" ", right)
+}
+
 func endpointHeader(statusLabel string) string {
-	return fmt.Sprintf("  %-*s  %7s  %9s  %-6s  %-*s",
-		endpointColWidth, "ENDPOINT",
-		"LOSS",
-		"LATENCY",
-		"COLO",
-		statusColWidth, statusLabel,
+	return fmt.Sprintf("  %s  %s  %s  %s  %s",
+		centerCell(endpointColWidth, "ENDPOINT"),
+		centerCell(lossColWidth, "LOSS"),
+		centerCell(metricColWidth, "LATENCY"),
+		centerCell(coloColWidth, "COLO"),
+		centerCell(statusColWidth, statusLabel),
 	)
 }
 
@@ -630,34 +648,30 @@ func endpointCandidateRow(r *result.Result, status string) string {
 	}
 
 	endpointStr := formatEndpoint(r.IP.String(), r.Port)
-	endpointFormatted := styleColEndpoint.Render(fmt.Sprintf("%-*s", endpointColWidth, endpointStr))
+	endpointFormatted := styleColEndpoint.Render(centerCell(endpointColWidth, endpointStr))
 
-	lossStr := fmt.Sprintf("%6.1f%%", r.Loss())
+	lossStr := fmt.Sprintf("%.1f%%", r.Loss())
 	var lossFormatted string
 	if r.Loss() == 0 {
-		lossFormatted = styleColLoss0.Render(lossStr)
+		lossFormatted = styleColLoss0.Render(centerCell(lossColWidth, lossStr))
 	} else {
-		lossFormatted = styleColLossBad.Render(lossStr)
+		lossFormatted = styleColLossBad.Render(centerCell(lossColWidth, lossStr))
 	}
 
 	avg := r.Avg()
-	latencyStr := fmt.Sprintf("%8s", formatDurationShort(avg))
+	latencyStr := formatDurationShort(avg)
 	var latencyFormatted string
 	if avg <= 0 {
-		latencyFormatted = styleDim.Render(latencyStr)
+		latencyFormatted = styleDim.Render(centerCell(metricColWidth, latencyStr))
 	} else if avg < 300*time.Millisecond {
-		latencyFormatted = styleColLatencyFast.Render(latencyStr)
+		latencyFormatted = styleColLatencyFast.Render(centerCell(metricColWidth, latencyStr))
 	} else if avg < 500*time.Millisecond {
-		latencyFormatted = styleColLatencyMid.Render(latencyStr)
+		latencyFormatted = styleColLatencyMid.Render(centerCell(metricColWidth, latencyStr))
 	} else {
-		latencyFormatted = styleColLatencySlow.Render(latencyStr)
+		latencyFormatted = styleColLatencySlow.Render(centerCell(metricColWidth, latencyStr))
 	}
 
-	coloFormatted := fmt.Sprintf("%s%s%s",
-		styleColBracket.Render("["),
-		styleColColo.Render(fmt.Sprintf("%-3s", colo)),
-		styleColBracket.Render("]"),
-	)
+	coloFormatted := styleColColo.Render(centerCell(coloColWidth, "["+colo+"]"))
 
 	var rawStatus string
 	var statusStyle lipgloss.Style
@@ -668,7 +682,7 @@ func endpointCandidateRow(r *result.Result, status string) string {
 		rawStatus = "✓ candidate"
 		statusStyle = styleColLatencyFast
 	}
-	statusFormatted := statusStyle.Render(fmt.Sprintf("%-*s", statusColWidth, rawStatus))
+	statusFormatted := statusStyle.Render(centerCell(statusColWidth, rawStatus))
 
 	return fmt.Sprintf("  %s  %s  %s  %s  %s",
 		endpointFormatted,
@@ -680,43 +694,53 @@ func endpointCandidateRow(r *result.Result, status string) string {
 }
 
 func validationHeader() string {
-	return fmt.Sprintf("  %-*s  %-*s  %9s  %8s  %-*s",
-		endpointColWidth, "ENDPOINT",
-		transportColWidth, "TYPE",
-		"LATENCY",
-		"CHECKS",
-		statusColWidth, "STATUS",
+	return fmt.Sprintf("  %s  %s  %s  %s  %s  %s",
+		centerCell(endpointColWidth, "ENDPOINT"),
+		centerCell(transportColWidth, "TYPE"),
+		centerCell(metricColWidth, "LATENCY"),
+		centerCell(8, "CHECKS"),
+		centerCell(uploadColWidth, "UPLOAD"),
+		centerCell(statusColWidth, "STATUS"),
 	)
 }
 
 func validationRow(r *xraytest.ValidationResult, status string) string {
 	endpointStr := formatEndpoint(r.IP, r.Port)
-	endpointFormatted := styleColEndpoint.Render(fmt.Sprintf("%-*s", endpointColWidth, endpointStr))
+	endpointFormatted := styleColEndpoint.Render(centerCell(endpointColWidth, endpointStr))
 
-	typeStr := fmt.Sprintf("%-*s", transportColWidth, r.Transport)
+	typeStr := centerCell(transportColWidth, r.Transport)
 	typeFormatted := lipgloss.NewStyle().Foreground(lipgloss.Color("#F6821F")).Bold(true).Render(typeStr)
 
 	latencyStr := "-"
 	if r.Success {
 		latencyStr = formatValidationLatency(r.Latency)
 	}
-	latencyPadded := fmt.Sprintf("%9s", latencyStr)
 	var latencyFormatted string
 	if !r.Success {
-		latencyFormatted = styleDim.Render(latencyPadded)
+		latencyFormatted = styleDim.Render(centerCell(metricColWidth, latencyStr))
 	} else if r.Latency < 300*time.Millisecond {
-		latencyFormatted = styleColLatencyFast.Render(latencyPadded)
+		latencyFormatted = styleColLatencyFast.Render(centerCell(metricColWidth, latencyStr))
 	} else if r.Latency < 500*time.Millisecond {
-		latencyFormatted = styleColLatencyMid.Render(latencyPadded)
+		latencyFormatted = styleColLatencyMid.Render(centerCell(metricColWidth, latencyStr))
 	} else {
-		latencyFormatted = styleColLatencySlow.Render(latencyPadded)
+		latencyFormatted = styleColLatencySlow.Render(centerCell(metricColWidth, latencyStr))
 	}
 
 	checks := "-"
 	if r.Attempts > 0 {
 		checks = fmt.Sprintf("%d/%d", r.Successes, r.Attempts)
 	}
-	checksFormatted := styleNormal.Render(fmt.Sprintf("%8s", checks))
+	checksFormatted := styleNormal.Render(centerCell(8, checks))
+
+	upload := "-"
+	if r.UploadTested {
+		if r.UploadKbps > 0 {
+			upload = formatUploadSpeed(r.UploadKbps)
+		} else {
+			upload = "error"
+		}
+	}
+	uploadFormatted := styleNormal.Render(centerCell(uploadColWidth, upload))
 
 	var rawStatus string
 	var statusStyle lipgloss.Style
@@ -730,15 +754,79 @@ func validationRow(r *xraytest.ValidationResult, status string) string {
 		}
 		statusStyle = styleColLossBad
 	}
-	statusFormatted := statusStyle.Render(fmt.Sprintf("%-*s", statusColWidth, rawStatus))
+	statusFormatted := statusStyle.Render(centerCell(statusColWidth, rawStatus))
 
-	return fmt.Sprintf("  %s  %s  %s  %s  %s",
+	return fmt.Sprintf("  %s  %s  %s  %s  %s  %s",
 		endpointFormatted,
 		typeFormatted,
 		latencyFormatted,
 		checksFormatted,
+		uploadFormatted,
 		statusFormatted,
 	)
+}
+
+func formatUploadSpeed(kbps float64) string {
+	if kbps <= 0 {
+		return "-"
+	}
+	if kbps >= 1024 {
+		return fmt.Sprintf("%.1fM", kbps/1024)
+	}
+	return fmt.Sprintf("%.0fk", kbps)
+}
+
+func uploadTestLabel(payloadBytes int64) string {
+	switch payloadBytes {
+	case xraytest.UploadProbeBytes:
+		return "Upload test: 64 KB"
+	case xraytest.UploadProbeBytes128:
+		return "Upload test: 128 KB"
+	default:
+		return "Upload test: off"
+	}
+}
+
+func uploadSampleDisplay(payloadBytes int64) string {
+	switch payloadBytes {
+	case xraytest.UploadProbeBytes:
+		return "64 KiB"
+	case xraytest.UploadProbeBytes128:
+		return "128 KiB"
+	default:
+		return "no upload"
+	}
+}
+
+func uploadBudgetDisplay(payloadBytes int64) string {
+	budget := xraytest.UploadBudgetForBytes(payloadBytes)
+	if budget <= 0 {
+		return "0 B"
+	}
+	return fmt.Sprintf("%d MiB", budget/(1024*1024))
+}
+
+func uploadTestDetail(payloadBytes int64) string {
+	if payloadBytes <= 0 {
+		return "Phase 2 only; no upload data is sent"
+	}
+	return fmt.Sprintf("Phase 2 only: one %s upload per validated endpoint; cap: %s", uploadSampleDisplay(payloadBytes), uploadBudgetDisplay(payloadBytes))
+}
+
+func cycleUploadBytes(current int64, direction int) int64 {
+	choices := []int64{0, xraytest.UploadProbeBytes, xraytest.UploadProbeBytes128}
+	index := 0
+	for i, choice := range choices {
+		if choice == current {
+			index = i
+			break
+		}
+	}
+	index = (index + direction) % len(choices)
+	if index < 0 {
+		index += len(choices)
+	}
+	return choices[index]
 }
 
 func tableSeparator(width int) string {
@@ -1232,6 +1320,9 @@ func (m AppModel) viewScanWithConfig() string {
 	sb.WriteString(fmt.Sprintf("%s\n\n", styleSep.Render("  "+strings.Repeat("─", minInt(m.width-4, 70)))))
 	if m.configScanning || m.configDone {
 		sb.WriteString(styleDim.Render("  Strict Xray validation — only endpoints that pass all three checks are saved.") + "\n\n")
+		if m.configUploadBytes > 0 {
+			sb.WriteString(styleDim.Render(fmt.Sprintf("  Upload quality enabled — %s per endpoint, capped at %s for this scan.", uploadSampleDisplay(m.configUploadBytes), uploadBudgetDisplay(m.configUploadBytes))) + "\n\n")
+		}
 	}
 
 	if !m.configScanning && !m.configDone {
@@ -1341,14 +1432,25 @@ func (m AppModel) viewScanWithConfig() string {
 		sb.WriteString("\n")
 		detail("←/→ choose profile cap, Top 25/50/100, or All validated")
 
-		// Row 6: File logging is optional. Saving ips.txt remains an explicit
+		// Row 6: Upload quality measurement is opt-in and globally capped.
+		rowLabel(6, "Upload")
+		uploadLabel := uploadTestLabel(m.configUploadBytes)
+		if m.configSetupRow == 6 {
+			sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Background(lipgloss.Color("#F6821F")).Render(" " + uploadLabel + " "))
+		} else {
+			sb.WriteString(styleNormal.Render(uploadLabel))
+		}
+		sb.WriteString("\n")
+		detail(uploadTestDetail(m.configUploadBytes))
+
+		// Row 7: File logging is optional. Saving ips.txt remains an explicit
 		// copy action after the scan regardless of this setting.
-		rowLabel(6, "Files")
+		rowLabel(7, "Files")
 		fileLabel := "Live report: off"
 		if m.configSaveResults {
 			fileLabel = "Live report: on"
 		}
-		if m.configSetupRow == 6 {
+		if m.configSetupRow == 7 {
 			sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Background(lipgloss.Color("#F6821F")).Render(" " + fileLabel + " "))
 		} else {
 			sb.WriteString(styleNormal.Render(fileLabel))
@@ -1356,13 +1458,13 @@ func (m AppModel) viewScanWithConfig() string {
 		sb.WriteString("\n")
 		detail("disable to keep this scan in memory; press c later to save ips.txt")
 
-		// Row 7: Start
-		rowLabel(7, "Start")
+		// Row 8: Start
+		rowLabel(8, "Start")
 		mode := "Phase 1 only"
 		if strings.TrimSpace(m.configInput.Value()) != "" {
 			mode = "Phase 1 + 2 Validation"
 		}
-		if m.configSetupRow == 7 {
+		if m.configSetupRow == 8 {
 			sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Background(lipgloss.Color("#F6821F")).Render(" "+mode+" ") + "\n")
 		} else {
 			sb.WriteString(styleNormal.Render(mode) + "\n")
@@ -1396,6 +1498,7 @@ func (m AppModel) viewScanWithConfig() string {
 	done := len(m.configResults)
 	total := m.configTotal
 	success, failed, skipped := validationOutcomeCounts(m.configResults)
+	uploadTested := validationUploadCount(m.configResults)
 	successRate := validationSuccessRate(success, failed)
 
 	elapsedStr := "-"
@@ -1425,6 +1528,7 @@ func (m AppModel) viewScanWithConfig() string {
 		success,
 		failed,
 		skipped,
+		uploadTested,
 		successRate,
 		elapsedStr,
 		etaStr,
@@ -1545,6 +1649,20 @@ func compareValidationResults(a, b *xraytest.ValidationResult) int {
 	if a.Successes != b.Successes {
 		return b.Successes - a.Successes
 	}
+	if a.Success && b.Success {
+		if a.UploadTested != b.UploadTested {
+			if a.UploadTested {
+				return -1
+			}
+			return 1
+		}
+		if a.UploadTested && a.UploadKbps != b.UploadKbps {
+			if a.UploadKbps > b.UploadKbps {
+				return -1
+			}
+			return 1
+		}
+	}
 	aLatency := validationLatencyRank(a.Latency)
 	bLatency := validationLatencyRank(b.Latency)
 	if aLatency != bLatency {
@@ -1604,6 +1722,16 @@ func validationOutcomeCounts(results []*xraytest.ValidationResult) (success, fai
 		}
 	}
 	return success, failed, skipped
+}
+
+func validationUploadCount(results []*xraytest.ValidationResult) int {
+	count := 0
+	for _, r := range results {
+		if r != nil && r.UploadTested {
+			count++
+		}
+	}
+	return count
 }
 
 func validationSuccessRate(success, failed int) float64 {
@@ -1691,8 +1819,8 @@ func (m AppModel) handleScanWithConfigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// --- Setup navigation (Source → Profile → Ports → Colo → Config → Advanced → Files → Start) ---
-	const maxRow = 7
+	// --- Setup navigation (Source → Profile → Ports → Colo → Config → Advanced → Upload → Files → Start) ---
+	const maxRow = 8
 
 	configNavLeft := func() {
 		switch m.configSetupRow {
@@ -1732,6 +1860,8 @@ func (m AppModel) handleScanWithConfigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.configTopNOverride = -1
 			}
 		case 6:
+			m.configUploadBytes = cycleUploadBytes(m.configUploadBytes, -1)
+		case 7:
 			m.configSaveResults = !m.configSaveResults
 		}
 	}
@@ -1768,6 +1898,8 @@ func (m AppModel) handleScanWithConfigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.configTopNOverride = -1
 			}
 		case 6:
+			m.configUploadBytes = cycleUploadBytes(m.configUploadBytes, 1)
+		case 7:
 			m.configSaveResults = !m.configSaveResults
 		}
 	}
@@ -1901,15 +2033,20 @@ func (m AppModel) handleScanWithConfigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.configSetupRow == 6 {
-			m.configSaveResults = !m.configSaveResults
+			m.configUploadBytes = cycleUploadBytes(m.configUploadBytes, 1)
 			m.configSetupRow = 7
 			return m, nil
 		}
 		if m.configSetupRow == 7 {
+			m.configSaveResults = !m.configSaveResults
+			m.configSetupRow = 8
+			return m, nil
+		}
+		if m.configSetupRow == 8 {
 			m.statusMsg = ""
 			return m.launchPhase1FromOptional()
 		}
-		if m.configSetupRow < 7 {
+		if m.configSetupRow < 8 {
 			m.configSetupRow++
 			if m.configSetupRow == 4 {
 				m.configInput.Focus()
@@ -2281,9 +2418,7 @@ func (m AppModel) handleConfigPhase1Key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.statusMsg = m.copyBestPhase1Candidate()
 		return m, nil
 	case "esc", "q":
-		if scanCancel != nil {
-			scanCancel()
-		}
+		cancelActiveScan()
 		clearLiveResultWriter()
 		m.page = PageHome
 		return m, nil
@@ -2320,6 +2455,7 @@ type configPhase1Options struct {
 	count       int
 	concurrency int
 	timeout     time.Duration
+	tries       int
 	rawURL      string
 	ports       []int
 	sourceMode  int
@@ -2339,26 +2475,31 @@ func (m AppModel) resolvePhase1Options() configPhase1Options {
 	count := 10000
 	concurrency := 200
 	timeout := 3 * time.Second
+	tries := 2
 
 	switch m.configProfileIdx {
 	case 0: // Quick
 		count = 5000
 		concurrency = 200
 		timeout = 2 * time.Second
+		tries = 1
 	case 1: // Balanced
 		count = 10000
 		concurrency = 200
 		timeout = 3 * time.Second
+		tries = 2
 	case 2: // Deep
 		count = 20000
 		concurrency = 200
 		timeout = 5 * time.Second
+		tries = 3
 	}
 
 	return configPhase1Options{
 		count:       count,
 		concurrency: concurrency,
 		timeout:     timeout,
+		tries:       tries,
 		rawURL:      m.configURL,
 		ports:       m.resolveConfigPorts(),
 		sourceMode:  m.configIPMode,
@@ -2570,13 +2711,14 @@ func clampPhase2Workers(workers int) int {
 func (m AppModel) startConfigPhase2(topIPs []*result.Result) tea.Cmd {
 	url := m.configURL
 	workers := m.resolvePhase2Workers()
+	uploadBytes := m.configUploadBytes
 	return func() tea.Msg {
-		go runConfigPhase2(url, topIPs, workers)
+		go runConfigPhase2(url, topIPs, workers, uploadBytes)
 		return nil
 	}
 }
 
-func runConfigPhase2(rawURL string, topIPs []*result.Result, workers int) {
+func runConfigPhase2(rawURL string, topIPs []*result.Result, workers int, uploadBytes int64) {
 	cfg, err := xraytest.ParseProxyURL(rawURL)
 	if err != nil {
 		if prog != nil {
@@ -2586,7 +2728,7 @@ func runConfigPhase2(rawURL string, topIPs []*result.Result, workers int) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	scanCancel = cancel
+	setScanCancel(cancel)
 	defer cancel()
 
 	topIPs = uniquePhase2Candidates(topIPs)
@@ -2601,6 +2743,10 @@ func runConfigPhase2(rawURL string, topIPs []*result.Result, workers int) {
 		}
 		return
 	}
+	var uploadBudget atomic.Int64
+	if uploadBytes > 0 {
+		uploadBudget.Store(xraytest.UploadBudgetForBytes(uploadBytes))
+	}
 
 	jobs := make(chan *result.Result)
 	var done atomic.Int64
@@ -2608,8 +2754,8 @@ func runConfigPhase2(rawURL string, topIPs []*result.Result, workers int) {
 
 	sendProgress := func(vr *xraytest.ValidationResult) {
 		current := int(done.Add(1))
-		if liveResultWriter != nil {
-			liveResultWriter.AddPhase2(vr)
+		if writer := currentLiveResultWriter(); writer != nil {
+			writer.AddPhase2(vr)
 		}
 		if prog != nil {
 			prog.Send(ConfigProgressMsg{
@@ -2630,7 +2776,14 @@ func runConfigPhase2(rawURL string, topIPs []*result.Result, workers int) {
 				}
 				ip := r.IP.String()
 				swapped := cfg.WithEndpoint(ip, r.Port)
-				vr := xraytest.ValidateConfig(ctx, swapped, phase2ValidationTimeout)
+				options := xraytest.ValidationOptions{}
+				if uploadBytes > 0 {
+					options.UploadBytes = uploadBytes
+					options.BeforeUpload = func() bool {
+						return reserveUploadBudget(&uploadBudget, uploadBytes)
+					}
+				}
+				vr := xraytest.ValidateConfigWithOptions(ctx, swapped, phase2ValidationTimeout, options)
 				if vr != nil {
 					vr.Phase1Latency = r.Avg()
 				}
@@ -2652,12 +2805,27 @@ enqueue:
 	}
 	close(jobs)
 	wg.Wait()
-	if liveResultWriter != nil {
-		_ = liveResultWriter.flush()
+	if writer := currentLiveResultWriter(); writer != nil {
+		_ = writer.flush()
 	}
 
 	if prog != nil {
 		prog.Send(ConfigDoneMsg{})
+	}
+}
+
+func reserveUploadBudget(budget *atomic.Int64, amount int64) bool {
+	if budget == nil || amount <= 0 {
+		return false
+	}
+	for {
+		remaining := budget.Load()
+		if remaining < amount {
+			return false
+		}
+		if budget.CompareAndSwap(remaining, remaining-amount) {
+			return true
+		}
 	}
 }
 
@@ -2762,7 +2930,7 @@ func renderMetadataGrid(width int, source, probe, ports string, tested, healthy,
 	return borderStyle.Render(grid)
 }
 
-func renderPhase2MetadataGrid(width int, done, total, success, failed, skipped int, successRate float64, elapsed, eta string, scanRate string) string {
+func renderPhase2MetadataGrid(width int, done, total, success, failed, skipped, uploadTested int, successRate float64, elapsed, eta string, scanRate string) string {
 	skippedStr := "-"
 	if skipped > 0 {
 		skippedStr = fmt.Sprintf("%d", skipped)
@@ -2783,9 +2951,10 @@ func renderPhase2MetadataGrid(width int, done, total, success, failed, skipped i
 	)
 
 	col3 := fmt.Sprintf(
-		"\n  %s %s\n  %s %s",
+		"\n  %s %s\n  %s %s\n  %s %s",
 		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("Elapsed:"), styleDim.Render(elapsed),
 		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("ETA:    "), styleDim.Render(eta),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("Uploads:"), styleAccent.Render(fmt.Sprintf("%d", uploadTested)),
 	)
 
 	innerWidth := width - 2
@@ -2884,9 +3053,7 @@ func parseIPInfoInput(input string) ([]net.IP, error) {
 func (m AppModel) handleIPInfoKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.ipInfoScanning {
 		if msg.String() == "esc" || msg.String() == "q" {
-			if scanCancel != nil {
-				scanCancel()
-			}
+			cancelActiveScan()
 			m.ipInfoScanning = false
 			m.ipInfoDone = false
 			m.page = PageHome
