@@ -39,11 +39,11 @@ type VLESSConfig struct {
 	Remark string
 }
 
-// ParseProxyURL parses a VLESS XHTTP share URL.
+// ParseProxyURL parses a VLESS share URL.
 func ParseProxyURL(raw string) (*VLESSConfig, error) {
 	raw = strings.TrimSpace(raw)
 	if !strings.HasPrefix(raw, "vless://") {
-		return nil, fmt.Errorf("unsupported URL scheme — this scanner accepts only vless:// XHTTP configs")
+		return nil, fmt.Errorf("unsupported URL scheme — this scanner accepts only vless:// configs")
 	}
 	return ParseVLESS(raw)
 }
@@ -125,10 +125,14 @@ func ParseVLESS(raw string) (*VLESSConfig, error) {
 		if err != nil {
 			return nil, err
 		}
+	case "ws", "websocket":
+		cfg.Network = "ws"
+		cfg.Path = paramOr(params, "path", "/")
+		cfg.Host = paramOr(params, "host", cfg.SNI)
 	case "":
-		return nil, fmt.Errorf("unsupported transport: missing type=xhttp")
+		return nil, fmt.Errorf("unsupported transport: missing type=xhttp or type=ws")
 	default:
-		return nil, fmt.Errorf("unsupported transport %q — this scanner accepts only xhttp", cfg.Network)
+		return nil, fmt.Errorf("unsupported transport %q — this scanner accepts only xhttp and ws", cfg.Network)
 	}
 
 	// ALPN
@@ -182,12 +186,14 @@ func (c *VLESSConfig) ToShareURL() string {
 	if c.Host != "" {
 		params.Set("host", c.Host)
 	}
-	if c.Mode != "" {
-		params.Set("mode", c.Mode)
-	}
-	if len(c.XHTTPExtra) > 0 {
-		if extra, err := json.Marshal(c.XHTTPExtra); err == nil {
-			params.Set("extra", string(extra))
+	if c.Network == "xhttp" {
+		if c.Mode != "" {
+			params.Set("mode", c.Mode)
+		}
+		if len(c.XHTTPExtra) > 0 {
+			if extra, err := json.Marshal(c.XHTTPExtra); err == nil {
+				params.Set("extra", string(extra))
+			}
 		}
 	}
 

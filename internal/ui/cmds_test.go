@@ -29,3 +29,32 @@ func TestConfigProbeFromURLUsesHTTPForXHTTPPhase1(t *testing.T) {
 		t.Fatal("AcceptCFHTTPError = false, want true")
 	}
 }
+
+func TestConfigProbeFromURLUsesHTTPForWSPhase1(t *testing.T) {
+	raw := "vless://3441b906-471f-4160-8f2c-a981793e6155@104.17.122.146:443?encryption=none&security=tls&sni=example.com&type=ws&host=example.com&path=%2Fchat#WS-Test"
+
+	cfg, err := configProbeFromURL(raw, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Port != 443 {
+		t.Fatalf("port = %d, want 443", cfg.Port)
+	}
+	if cfg.Mode.String() != "http" {
+		t.Fatalf("mode = %s, want http", cfg.Mode.String())
+	}
+	if cfg.SNI != "example.com" {
+		t.Fatalf("SNI = %q", cfg.SNI)
+	}
+	if cfg.XHTTPPath != "/chat" {
+		t.Fatalf("path = %q, want /chat", cfg.XHTTPPath)
+	}
+	if cfg.XHTTPHost != "example.com" {
+		t.Fatalf("host = %q, want example.com", cfg.XHTTPHost)
+	}
+	if !cfg.AcceptCFHTTPError {
+		t.Fatal("AcceptCFHTTPError = false, want true")
+	}
+}
+

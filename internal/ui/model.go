@@ -187,9 +187,9 @@ type menuEntry struct {
 
 var menuEntries = []menuEntry{
 	{"Find Cloudflare IPs", "Scan Cloudflare ranges or endpoints from ips.txt"},
-	{"VLESS Config Generator", "Create XHTTP VLESS client URLs for saved endpoints"},
+	{"VLESS Config Generator", "Create VLESS client URLs for saved endpoints"},
 	{"IP Info / Lookup", "Inspect colo, latency, and reachability for IPs"},
-	{"About", "Learn about the scanner and its XHTTP validation"},
+	{"About", "Learn about the scanner and its validation"},
 	{"Quit", "Close the application"},
 }
 
@@ -232,7 +232,7 @@ func NewApp(version string) AppModel {
 
 	// Config input for "Scan with Config"
 	cfgInput := textinput.New()
-	cfgInput.Placeholder = "vless:// XHTTP share URL"
+	cfgInput.Placeholder = "vless:// share URL (ws or xhttp)"
 	cfgInput.CharLimit = 10000
 	cfgInput.Width = 58
 	cfgInput.Prompt = "› "
@@ -262,7 +262,7 @@ func NewApp(version string) AppModel {
 	m.configColoInput = coloInput
 
 	genInput := textinput.New()
-	genInput.Placeholder = "paste your working vless:// XHTTP config"
+	genInput.Placeholder = "paste your working vless:// config"
 	genInput.CharLimit = 10000
 	genInput.Width = 58
 	genInput.Prompt = "› "
@@ -989,7 +989,7 @@ func (m AppModel) viewHome() string {
 	sb.WriteString("  " + gradientText("MOZ", m.bannerFrame/3, []string{"#35B8FF", "#6C8DFF", "#B066FF"}))
 	sb.WriteString(styleDim.Render("  /  CLOUDFLARE SCANNER"))
 	sb.WriteString("  " + styleAccent.Render("v"+m.version) + "\n")
-	sb.WriteString(styleDim.Render("  XHTTP endpoint discovery and strict Xray validation") + "\n")
+	sb.WriteString(styleDim.Render("  XHTTP and WebSocket endpoint discovery and strict Xray validation") + "\n")
 	sb.WriteString(styleSep.Render("  "+strings.Repeat("─", minInt(m.width-4, 62))) + "\n\n")
 	sb.WriteString(styleAccent.Render("  MAIN MENU") + "\n\n")
 
@@ -1039,7 +1039,7 @@ func (m AppModel) viewGenerateConfigs() string {
 
 	sb.WriteString("\n" + styleTitle.Render("  Generate Client Configs") + "\n")
 	sb.WriteString(fmt.Sprintf("%s\n\n", styleSep.Render("  "+strings.Repeat("─", minInt(m.width-4, 76)))))
-	sb.WriteString(styleDim.Render("  Build import-ready XHTTP VLESS URLs from saved endpoints") + "\n\n")
+	sb.WriteString(styleDim.Render("  Build import-ready VLESS URLs from saved endpoints") + "\n\n")
 
 	rowLabel := func(row int, label string) {
 		if m.generatorRow == row {
@@ -1059,7 +1059,7 @@ func (m AppModel) viewGenerateConfigs() string {
 			detail(summary)
 		}
 	} else {
-		detail("paste one working VLESS XHTTP config; endpoints come from ips.txt")
+		detail("paste one working VLESS config; endpoints come from ips.txt")
 	}
 
 	rowLabel(1, "Prefix")
@@ -1177,7 +1177,7 @@ func (m AppModel) handleGenerateConfigsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 
 func generateV2RayConfigs(rawURL, prefix string) (string, int, error) {
 	if strings.TrimSpace(rawURL) == "" {
-		return "", 0, fmt.Errorf("paste a working VLESS XHTTP config first")
+		return "", 0, fmt.Errorf("paste a working VLESS config first")
 	}
 	cfg, err := xraytest.ParseProxyURL(rawURL)
 	if err != nil {
@@ -1229,16 +1229,16 @@ func (m AppModel) viewAbout() string {
 	sb.WriteString("  " + styleAccent.Render("v"+m.version) + "\n")
 	sb.WriteString(styleSep.Render("  "+strings.Repeat("─", minInt(m.width-4, 62))) + "\n\n")
 
-	sb.WriteString(styleAccent.Render("  XHTTP-only Cloudflare endpoint scanner"))
+	sb.WriteString(styleAccent.Render("  VLESS (WebSocket & XHTTP) Cloudflare endpoint scanner"))
 	sb.WriteString("\n")
 	sb.WriteString(styleDim.Render("  Built for Windows desktops and Linux VPS hosts."))
 	sb.WriteString("\n\n")
 	sb.WriteString(styleNormal.Render("  WHAT IT DOES") + "\n")
 	sb.WriteString(styleDim.Render("  • Scans Cloudflare ranges or endpoints from ips.txt") + "\n")
-	sb.WriteString(styleDim.Render("  • Confirms candidates through your VLESS XHTTP configuration") + "\n")
+	sb.WriteString(styleDim.Render("  • Confirms candidates through your VLESS configuration") + "\n")
 	sb.WriteString(styleDim.Render("  • Saves only endpoints that pass strict 3/3 Xray validation") + "\n\n")
 	sb.WriteString(styleNormal.Render("  COMPATIBILITY") + "\n")
-	sb.WriteString(styleDim.Render("  Preserves XHTTP settings, ML-KEM 768xplus encryption, and XTLS Vision.") + "\n\n")
+	sb.WriteString(styleDim.Render("  Preserves WebSocket and XHTTP settings, ML-KEM 768xplus encryption, and XTLS Vision.") + "\n\n")
 	sb.WriteString(styleDim.Render("  Use only with endpoints and configurations you are authorized to test.") + "\n\n")
 	sb.WriteString(styleDim.Render("  github.com/Moz4020/Moz-Cloudflare-Scanner"))
 	sb.WriteString("\n\n")
