@@ -1,10 +1,10 @@
 # Moz Cloudflare Scanner
 
-An easy terminal app for finding Cloudflare `IP:port` endpoints that work with **your VLESS XHTTP configuration**. It is designed for Windows users and Linux VPS users who want to scan, copy the working results, and use them in their client.
+An easy terminal app for finding Cloudflare `IP:port` endpoints that work with **your VLESS configuration** (WebSocket or XHTTP). It is designed for Windows users and Linux VPS users who want to scan, copy the working results, and use them in their client.
 
 ## What you need
 
-- A working `vless://` link with `type=xhttp`.
+- A working `vless://` link with `type=ws` or `type=xhttp`.
 - Windows 10/11 or a Linux VPS.
 - Permission to test the configuration and endpoints you use.
 
@@ -16,7 +16,7 @@ No Go installation or coding knowledge is needed when using a release build.
 2. Open the extracted folder and run `moz-cloudflare-scanner.exe`.
 3. On the main menu, choose **Find Cloudflare IPs**.
 4. Keep **Default CF** and **Balanced** selected for your first scan.
-5. Paste your working VLESS XHTTP link on the **Config** row.
+5. Paste your working VLESS link on the **Config** row.
 6. Leave **Upload → Upload test: off** unless you want to compare upload quality. You can choose a 64 KiB sample with a 4 MiB cap or a 128 KiB sample with an 8 MiB cap for the entire scan.
 7. On **Files**, choose whether to create a live scan report. Turn it off for an in-memory scan with no report file.
 8. Choose **Start** and press Enter.
@@ -75,7 +75,7 @@ After a scan:
 
 1. Leave `ips.txt` next to the application.
 2. Choose **VLESS Config Generator** from the main menu.
-3. Paste the same working VLESS XHTTP link.
+3. Paste the same working VLESS link.
 4. Enter an optional name prefix, such as `Moz Fast`.
 5. Select **Generate configs.txt**.
 
@@ -97,15 +97,16 @@ Large CIDR ranges are rejected to prevent accidental very large scans.
 
 ## Supported configuration
 
-The scanner intentionally accepts only:
+The scanner supports behind-CDN VLESS configurations:
 
 ```text
+vless://...type=ws...
 vless://...type=xhttp...
 ```
 
-It preserves XHTTP settings, ML-KEM 768xplus encryption, XTLS Vision flow, TLS fingerprint, ALPN, and XHTTP extras when it validates or generates links.
+It preserves WebSocket and XHTTP settings, ML-KEM 768xplus encryption, XTLS Vision flow, TLS fingerprint, ALPN, and XHTTP extras when it validates or generates links.
 
-It does not accept Trojan, VMess, WebSocket, gRPC, or SplitHTTP links.
+It does not accept Trojan, VMess, gRPC, HTTPUpgrade, or SplitHTTP links.
 
 ## Linux VPS
 

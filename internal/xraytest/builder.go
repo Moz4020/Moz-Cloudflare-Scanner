@@ -104,19 +104,34 @@ func buildStreamSettings(cfg *VLESSConfig) map[string]interface{} {
 		stream["tlsSettings"] = tls
 	}
 
-	xhttp := map[string]interface{}{
-		"path": cfg.Path,
+	switch cfg.Network {
+	case "ws", "websocket":
+		stream["network"] = "ws"
+		ws := map[string]interface{}{
+			"path": cfg.Path,
+		}
+		if cfg.Host != "" {
+			ws["host"] = cfg.Host
+			ws["headers"] = map[string]interface{}{
+				"Host": cfg.Host,
+			}
+		}
+		stream["wsSettings"] = ws
+	case "xhttp":
+		xhttp := map[string]interface{}{
+			"path": cfg.Path,
+		}
+		if cfg.Host != "" {
+			xhttp["host"] = cfg.Host
+		}
+		if cfg.Mode != "" {
+			xhttp["mode"] = cfg.Mode
+		}
+		if len(cfg.XHTTPExtra) > 0 {
+			xhttp["extra"] = cfg.XHTTPExtra
+		}
+		stream["xhttpSettings"] = xhttp
 	}
-	if cfg.Host != "" {
-		xhttp["host"] = cfg.Host
-	}
-	if cfg.Mode != "" {
-		xhttp["mode"] = cfg.Mode
-	}
-	if len(cfg.XHTTPExtra) > 0 {
-		xhttp["extra"] = cfg.XHTTPExtra
-	}
-	stream["xhttpSettings"] = xhttp
 
 	return stream
 }

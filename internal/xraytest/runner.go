@@ -179,7 +179,7 @@ func ValidateConfigWithOptions(ctx context.Context, cfg *VLESSConfig, timeout ti
 	}
 	if !res.Success {
 		if lastErr == "" {
-			lastErr = fmt.Sprintf("only %d/%d xhttp checks passed", res.Successes, validationAttempts)
+			lastErr = fmt.Sprintf("only %d/%d %s checks passed", res.Successes, validationAttempts, res.Transport)
 		}
 		res.Error = lastErr
 	}

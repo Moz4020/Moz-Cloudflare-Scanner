@@ -26,6 +26,27 @@ func TestParseVLESSXHTTP(t *testing.T) {
 	}
 }
 
+func TestParseVLESSWebSocket(t *testing.T) {
+	raw := "vless://abcdef12-3456-7890-abcd-ef1234567890@example.com:443?encryption=none&security=tls&sni=example.com&fp=chrome&type=ws&host=example.com&path=%2Fws#CF-WS"
+	cfg, err := ParseVLESS(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Network != "ws" {
+		t.Fatalf("network = %q, want ws", cfg.Network)
+	}
+	if cfg.Host != "example.com" || cfg.Path != "/ws" {
+		t.Fatalf("host/path = %q %q", cfg.Host, cfg.Path)
+	}
+	rebuilt := cfg.ToShareURL()
+	if !strings.Contains(rebuilt, "type=ws") {
+		t.Fatalf("rebuilt URL missing ws type: %s", rebuilt)
+	}
+	if strings.Contains(rebuilt, "mode=") {
+		t.Fatalf("rebuilt URL should not contain mode for ws: %s", rebuilt)
+	}
+}
+
 func TestParseVLESSRejectsSplitHTTP(t *testing.T) {
 	raw := "vless://abcdef12-3456-7890-abcd-ef1234567890@example.com:443?encryption=none&security=tls&sni=example.com&type=splithttp&path=%2Fdownload&host=example.com#test"
 	if _, err := ParseVLESS(raw); err == nil {
@@ -47,13 +68,13 @@ func TestParseProxyURLRejectsUnsupportedSchemes(t *testing.T) {
 }
 
 func TestParseVLESSRejectsUnsupportedTransport(t *testing.T) {
-	raw := "vless://12345678-1234-1234-1234-123456789abc@example.com:443?encryption=none&security=tls&type=ws&path=%2Fdownload&host=example.com#test"
-	if _, err := ParseVLESS(raw); err == nil {
-		t.Fatal("expected ws transport to be rejected")
-	}
-	raw = "vless://12345678-1234-1234-1234-123456789abc@example.com:443?encryption=none&security=tls&type=grpc&serviceName=download#test"
+	raw := "vless://12345678-1234-1234-1234-123456789abc@example.com:443?encryption=none&security=tls&type=grpc&serviceName=download#test"
 	if _, err := ParseVLESS(raw); err == nil {
 		t.Fatal("expected grpc transport to be rejected")
+	}
+	raw = "vless://12345678-1234-1234-1234-123456789abc@example.com:443?encryption=none&security=tls&type=httpupgrade&path=%2F#test"
+	if _, err := ParseVLESS(raw); err == nil {
+		t.Fatal("expected httpupgrade transport to be rejected")
 	}
 	raw = "vless://12345678-1234-1234-1234-123456789abc@example.com:443?encryption=none&security=tls#test"
 	if _, err := ParseVLESS(raw); err == nil {

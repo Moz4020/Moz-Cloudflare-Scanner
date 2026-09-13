@@ -53,6 +53,63 @@ func TestBuildXrayConfigXHTTP(t *testing.T) {
 	}
 }
 
+func TestBuildXrayConfigWebSocket(t *testing.T) {
+	cfg := &VLESSConfig{
+		UUID:        "abcdef12-3456-7890-abcd-ef1234567890",
+		Address:     "104.17.122.146",
+		Port:        443,
+		Encryption:  "none",
+		Network:     "ws",
+		Path:        "/ws",
+		Host:        "insane.mozsub.ir",
+		Security:    "tls",
+		SNI:         "insane.mozsub.ir",
+		Fingerprint: "chrome",
+		ALPN:        []string{"h2", "http/1.1"},
+	}
+	configBytes, err := BuildXrayConfig(cfg, 10813)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(configBytes, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	proxy := parsed["outbounds"].([]interface{})[0].(map[string]interface{})
+	stream := proxy["streamSettings"].(map[string]interface{})
+	if stream["network"].(string) != "ws" {
+		t.Fatalf("network = %v, want ws", stream["network"])
+	}
+	if _, ok := stream["xhttpSettings"]; ok {
+		t.Fatal("xhttpSettings should not be present")
+	}
+	wsSettings := stream["wsSettings"].(map[string]interface{})
+	if wsSettings["path"].(string) != "/ws" {
+		t.Fatalf("path = %v", wsSettings["path"])
+	}
+	headers := wsSettings["headers"].(map[string]interface{})
+	if headers["Host"].(string) != "insane.mozsub.ir" {
+		t.Fatalf("Host = %v", headers["Host"])
+	}
+
+	jsonConfig, err := serial.DecodeJSONConfig(bytes.NewReader(configBytes))
+	if err != nil {
+		t.Fatalf("xray serial decode failed: %v", err)
+	}
+	pbConfig, err := jsonConfig.Build()
+	if err != nil {
+		t.Fatalf("xray pbConfig build failed: %v", err)
+	}
+	instance, err := xcore.New(pbConfig)
+	if err != nil {
+		t.Fatalf("xray core creation failed: %v", err)
+	}
+	if err := instance.Start(); err != nil {
+		t.Fatalf("xray core failed to start: %v", err)
+	}
+	_ = instance.Close()
+}
+
 func TestBuildXrayConfigAddressSwap(t *testing.T) {
 	raw := "vless://12345678-1234-1234-1234-123456789abc@example.com:443?encryption=none&security=tls&sni=example.com&type=xhttp&path=%2Fdownload&host=example.com#test"
 	cfg, err := ParseVLESS(raw)

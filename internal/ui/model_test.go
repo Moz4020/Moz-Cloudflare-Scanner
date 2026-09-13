@@ -511,6 +511,16 @@ func TestParsedConfigSummaryShowsXHTTPAndEncryption(t *testing.T) {
 	}
 }
 
+func TestParsedConfigSummaryShowsWS(t *testing.T) {
+	raw := "vless://11111111-1111-1111-1111-111111111111@104.17.122.146:443?encryption=none&security=tls&sni=example.com&type=ws&host=example.com&path=%2Fws#Main-Moz"
+	got := parsedConfigSummary(raw)
+	for _, want := range []string{"vless", "ws", "example.com", "none"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("summary %q does not contain %q", got, want)
+		}
+	}
+}
+
 func TestSelectPhase2CandidatesSpreadsLatency(t *testing.T) {
 	var results []*result.Result
 	for i := 0; i < 100; i++ {
